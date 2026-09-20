@@ -1,0 +1,11 @@
+package tencentcloud_api
+
+import (
+	"github.com/gin-gonic/gin"
+
+	"github.com/daqing/airway/lib/render"
+)
+
+func IndexAction(c *gin.Context) {
+	render.OK(c, gin.H{"plugin": "tencentcloud"})
+}

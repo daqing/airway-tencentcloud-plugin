@@ -1,0 +1,58 @@
+# github.com/daqing/airway-tencentcloud-plugin
+
+An [Airway](https://github.com/daqing/airway) plugin.
+
+## Develop
+
+```bash
+go get github.com/daqing/airway@latest
+go mod tidy
+```
+
+## Use in a host application
+
+```bash
+go get github.com/daqing/airway-tencentcloud-plugin
+```
+
+Then enable it with a blank import in the host's `plugins.go`:
+
+```go
+import (
+	_ "github.com/daqing/airway-tencentcloud-plugin"
+)
+```
+
+Content reaches the host in two ways: code under `install/lib/` is compiled
+into the host binary through this import, while the files under
+`install/host/` and `install/deps/` are copied into the host project by
+`plugin:install` — deploy configs, companion services, SQL migrations, the
+things tools outside the Go build read from disk. `install/ignore/` and
+anything matching the root `.gitignore` never leave the plugin checkout.
+
+The plugin mounts its routes at `/api/v1/tencentcloud`. `plugin:install` reads
+everything from the plugin's `install/` directory. To ship SQL migrations,
+add `<version>_<name>.up.sql` / `.down.sql` files under
+`install/host/db/migrate/` (the `install/host/` directory holds files that
+`plugin:install` installs into the host project's own tree), expose them
+with `plugin.MigrationProvider`, and install them in the host with
+`go run . plugin:install github.com/daqing/airway-tencentcloud-plugin`.
+
+To ship extra project files (companion services, deploy configs, ...), put
+them under `install/deps/tencentcloud/` — `plugin:install` merges the whole
+tree into the host project's `deps/` directory, skipping files that already
+exist. Ship files named `go.mod` as `go.mod.templ` (installed as `go.mod`):
+Go module zips drop nested modules, so a real `go.mod` inside `install/deps/`
+would never reach the host. Keeping the real `go.mod` beside its `.templ` for
+local builds is fine — the install ships the `.templ` content only, and
+fails if the two drift apart.
+
+Files that stay in the plugin checkout but must never be installed go under
+`install/ignore/`: `plugin:install` only reads `install/host/` and
+`install/deps/`, and skips every `ignore/` directory inside them as well, so
+anything placed there never reaches the host project. The root `.gitignore`
+is honored too: ignored files (`node_modules/`, `.env`, ...) are never
+installed into a host project.
+
+See https://github.com/daqing/airway/blob/main/docs/plugin.md for the full
+plugin guide.

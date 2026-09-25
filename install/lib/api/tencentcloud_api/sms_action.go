@@ -23,6 +23,22 @@ type smsSendRequest struct {
 	SessionContext   string   `json:"session_context"`
 }
 
+// validate applies the send rules shared by the real and mock actions so
+// the two endpoints reject the same requests; it returns the error message
+// or "" when the request is valid.
+func (req smsSendRequest) validate() string {
+	if len(req.PhoneNumbers) == 0 {
+		return "phone_numbers must not be empty"
+	}
+	if len(req.PhoneNumbers) > maxPhoneNumbers {
+		return fmt.Sprintf("phone_numbers supports at most %d numbers per request", maxPhoneNumbers)
+	}
+	if req.TemplateID == "" {
+		return "template_id must not be empty"
+	}
+	return ""
+}
+
 // SmsSendAction sends SMS through Tencent Cloud. Each request must target
 // one template; phone numbers and template params map onto the template's
 // variables in order.
@@ -32,17 +48,8 @@ func SmsSendAction(c *gin.Context) {
 		render.ErrorMessage(c, "invalid request body: "+err.Error())
 		return
 	}
-
-	if len(req.PhoneNumbers) == 0 {
-		render.ErrorMessage(c, "phone_numbers must not be empty")
-		return
-	}
-	if len(req.PhoneNumbers) > maxPhoneNumbers {
-		render.ErrorMessage(c, fmt.Sprintf("phone_numbers supports at most %d numbers per request", maxPhoneNumbers))
-		return
-	}
-	if req.TemplateID == "" {
-		render.ErrorMessage(c, "template_id must not be empty")
+	if msg := req.validate(); msg != "" {
+		render.ErrorMessage(c, msg)
 		return
 	}
 

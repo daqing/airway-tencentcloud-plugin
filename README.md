@@ -12,6 +12,22 @@ go get github.com/daqing/airway@latest
 go mod tidy
 ```
 
+To exercise the API without an Airway host application, run the local dev
+server:
+
+```bash
+go run ./install/ignore/devserver   # listens on :3000, override with LISTEN
+```
+
+```bash
+curl -X POST http://localhost:3000/api/v1/tencentcloud/sms/send/mock \
+  -H 'Content-Type: application/json' \
+  -d '{"phone_numbers":["+8618501234444"],"template_id":"1234567"}'
+```
+
+The mock endpoint needs no configuration; the real `/sms/send` reads the
+`TENCENTCLOUD_*` environment variables (see Configuration) on first use.
+
 ## Use in a host application
 
 ```bash
@@ -83,6 +99,41 @@ each number's status):
         "fee": 1,
         "code": "Ok",
         "message": "send success"
+      }
+    ]
+  },
+  "message": ""
+}
+```
+
+### Mock send (local debugging)
+
+`POST /api/v1/tencentcloud/sms/send/mock`
+
+Accepts the same request fields, applies the same validation, and renders
+the exact same response as [Send SMS](#send-sms) — same fields, same
+types, nothing added or removed — so a client can switch between the two
+endpoints without any code changes. The only difference: nothing reaches
+Tencent Cloud (no credentials or SMS configuration needed), and the
+generated verification code comes back as the value of `request_id` and
+each status's `serial_no` (a six-digit string, leading zeros preserved).
+
+> This endpoint hands a verification code to anyone who calls it. Never
+> expose it outside local development.
+
+```json
+{
+  "code": 0,
+  "data": {
+    "request_id": "654321",
+    "send_status_set": [
+      {
+        "serial_no": "654321",
+        "phone_number": "+8618501234444",
+        "fee": 1,
+        "session_context": "order-42",
+        "code": "Ok",
+        "message": "mock send success"
       }
     ]
   },

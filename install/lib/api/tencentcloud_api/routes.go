@@ -8,4 +8,5 @@ import (
 // at the plugin's MountPath.
 func Routes(r *gin.RouterGroup) {
 	r.POST("/sms/send", SmsSendAction)
+	r.POST("/sms/send/mock", SmsSendMockAction)
 }

@@ -19,9 +19,10 @@ applications APIs for Tencent Cloud services (SMS today). Go module
   `plugin:install`. SQL migrations go in `install/host/db/migrate/`.
 - `install/deps/tencentcloud/` — companion services / deploy configs merged
   into the host project's `deps/` directory (existing files are kept).
-- `install/ignore/` — anything here never reaches a host project. `ignore/`
-  directories inside `install/host/` and `install/deps/` are skipped too, as
-  are files matching the root `.gitignore`.
+- `install/ignore/` — anything here never reaches a host project; the local
+  dev server lives at `install/ignore/devserver/`. `ignore/` directories
+  inside `install/host/` and `install/deps/` are skipped too, as are files
+  matching the root `.gitignore`.
 
 ## Commands
 
@@ -30,6 +31,8 @@ go get github.com/daqing/airway@latest && go mod tidy  # sync with host framewor
 go build ./...                                          # compile
 go vet ./...                                            # lint
 go test ./...                                           # unit tests (stdlib testing, no assertion libs)
+go run ./install/ignore/devserver                       # serve the API without an airway host
+                                                        # (:3000, override with LISTEN) for curl testing
 ```
 
 Installing into a host application (run from the host project, not here):

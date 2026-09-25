@@ -12,6 +12,21 @@ go get github.com/daqing/airway@latest
 go mod tidy
 ```
 
+不依赖 Airway 宿主项目也能测试 API,直接运行本地开发服务器:
+
+```bash
+go run ./install/ignore/devserver   # 默认监听 :3000,可用 LISTEN 覆盖
+```
+
+```bash
+curl -X POST http://localhost:3000/api/v1/tencentcloud/sms/send/mock \
+  -H 'Content-Type: application/json' \
+  -d '{"phone_numbers":["+8618501234444"],"template_id":"1234567"}'
+```
+
+mock 接口无需任何配置;真实的 `/sms/send` 在首次调用时读取
+`TENCENTCLOUD_*` 环境变量(见「配置」一节)。
+
 ## 在宿主项目中使用
 
 ```bash
@@ -82,6 +97,38 @@ status):
         "fee": 1,
         "code": "Ok",
         "message": "send success"
+      }
+    ]
+  },
+  "message": ""
+}
+```
+
+### Mock 发送(本地调试)
+
+`POST /api/v1/tencentcloud/sms/send/mock`
+
+请求字段、校验规则和响应结构与[发送短信](#发送短信)完全一致 —— 字段和
+类型没有任何增减,客户端在两个接口之间切换不需要改动任何代码。区别仅
+有一点:mock 不触碰腾讯云(不需要密钥和短信配置),生成的验证码就是
+响应里 `request_id` 和每条 status 的 `serial_no` 的值(6 位数字字符串,
+保留前导零)。
+
+> 该接口会把验证码发给任何调用者,切勿暴露到本地开发以外的环境。
+
+```json
+{
+  "code": 0,
+  "data": {
+    "request_id": "654321",
+    "send_status_set": [
+      {
+        "serial_no": "654321",
+        "phone_number": "+8618501234444",
+        "fee": 1,
+        "session_context": "order-42",
+        "code": "Ok",
+        "message": "mock send success"
       }
     ]
   },

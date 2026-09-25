@@ -1,6 +1,7 @@
 # AGENTS.md
 
-Airway plugin that integrates Tencent Cloud. Go module
+Airway plugin that integrates the Tencent Cloud Go SDK, giving host
+applications APIs for Tencent Cloud services (SMS today). Go module
 `github.com/daqing/airway-tencentcloud-plugin`, built against the
 [`airway`](https://github.com/daqing/airway) host framework (gin-based).
 
@@ -10,8 +11,10 @@ Airway plugin that integrates Tencent Cloud. Go module
   sets `Name()` (`tencentcloud`) and `MountPath()` (`/api/v1/tencentcloud`),
   delegates routing to `install/lib/api/tencentcloud_api.Routes`.
 - `install/lib/` — Go code compiled into the host binary through the host's
-  blank import. API handlers live in `install/lib/api/tencentcloud_api/`,
-  data models in `install/lib/models/`.
+  blank import. SDK wrappers live in `install/lib/tencentcloud/`
+  (config + cached client), HTTP handlers in
+  `install/lib/api/tencentcloud_api/`, data models in
+  `install/lib/models/`.
 - `install/host/` — files copied verbatim into the host project's own tree by
   `plugin:install`. SQL migrations go in `install/host/db/migrate/`.
 - `install/deps/tencentcloud/` — companion services / deploy configs merged
@@ -26,7 +29,7 @@ Airway plugin that integrates Tencent Cloud. Go module
 go get github.com/daqing/airway@latest && go mod tidy  # sync with host framework
 go build ./...                                          # compile
 go vet ./...                                            # lint
-go test ./...                                           # tests (none yet)
+go test ./...                                           # unit tests (stdlib testing, no assertion libs)
 ```
 
 Installing into a host application (run from the host project, not here):
@@ -50,6 +53,20 @@ go run . plugin:install github.com/daqing/airway-tencentcloud-plugin
   `go.mod.templ` (installed as `go.mod`) — Go module zips drop nested modules.
   A real `go.mod` may sit beside its `.templ` for local builds; `plugin:install`
   fails if the two drift apart.
+- Tencent Cloud SDK: wrappers stay in `install/lib/tencentcloud/` and return
+  plugin-owned, snake_case JSON structs; the `*_api` layer never imports SDK
+  packages. The SDK client is lazy (`sync.Once`): config errors surface on
+  first API call via `render.Error`, never at host boot, so unconfigured hosts
+  still start. Required env: `TENCENTCLOUD_SECRET_ID`,
+  `TENCENTCLOUD_SECRET_KEY`, `TENCENTCLOUD_SMS_SDK_APP_ID`; optional:
+  `TENCENTCLOUD_SMS_SIGN_NAME`, `TENCENTCLOUD_REGION` (default
+  `ap-guangzhou`). A zero `code` in the response means Tencent Cloud accepted
+  the request — per-number results are in `send_status_set` with `code: "Ok"`.
+- Testing: stdlib `testing` with `t.Setenv` + table-driven subtests; no
+  assertion libraries, no `t.Parallel` (tests mutate package env state).
+  The SDK boundary is stubbed, never hit for real: `tencentcloud.sendSmsCall`
+  (in-package) and `tencentcloud_api.sendSms` replace the call chain, and
+  `resetForTest` re-arms the lazy `sync.Once` setup between configurations.
 
 Before changing install/mount behavior, read the plugin guide:
 https://github.com/daqing/airway/blob/main/docs/plugin.md

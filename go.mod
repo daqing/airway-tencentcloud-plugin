@@ -5,6 +5,8 @@ go 1.27.1
 require (
 	github.com/daqing/airway v0.14.0
 	github.com/gin-gonic/gin v1.12.0
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.172
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/sms v1.3.172
 )
 
 require (

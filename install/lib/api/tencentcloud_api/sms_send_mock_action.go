@@ -32,7 +32,7 @@ var randomCode = func() (string, error) {
 // request_id and every status's serial_no. It hands out codes to anyone
 // who calls it — never expose it in production.
 func SmsSendMockAction(c *gin.Context) {
-	var req smsSendRequest
+	var req SmsSendRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		render.ErrorMessage(c, "invalid request body: "+err.Error())
 		return

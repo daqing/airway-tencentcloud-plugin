@@ -28,7 +28,7 @@ func setupSmsTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	Routes(r.Group("/api/v1/tencentcloud"))
+	DebugRoutes(r.Group("/api/v1/tencentcloud"))
 	return r
 }
 

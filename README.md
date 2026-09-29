@@ -5,11 +5,50 @@ An [Airway](https://github.com/daqing/airway) plugin that integrates the
 giving host applications ready-made APIs for Tencent Cloud services so each
 Airway project doesn't wire the SDK itself. Currently supported: SMS.
 
+The same module ships a second plugin, `smsverify`, with the whole phone +
+verification code flow — issuing, rate limiting, image captchas, delivery and
+checking — so a host does not write that again either.
+
 ## Develop
 
 ```bash
 go get github.com/daqing/airway@latest
 go mod tidy
+```
+
+To exercise the API without an Airway host application, run the local dev
+server:
+
+```bash
+go run ./install/ignore/devserver   # listens on 127.0.0.1:3000, override with LISTEN
+```
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/v1/tencentcloud/sms/send/mock \
+  -H 'Content-Type: application/json' \
+  -d '{"phone_numbers":["+8618501234444"],"template_id":"1234567"}'
+```
+
+The dev server registers every endpoint unconditionally and serves them from
+an in-memory SQLite database, so the phone verification flow works end to end:
+
+```bash
+curl -s localhost:3000/api/v1/captcha
+curl -sX POST localhost:3000/api/v1/sms_codes \
+  -H 'Content-Type: application/json' -d '{"phone":"18501234444"}'
+```
+
+Start it with `AIRWAY_ENV=local` to get the mock SMS driver, which hands the
+code back as `dev_code` instead of sending it. The mock tencentcloud endpoint
+needs no configuration either; the real `/sms/send` reads the `TENCENTCLOUD_*`
+environment variables (see Configuration) on first use.
+
+Point `DB_DSN` at a PostgreSQL or MySQL server to serve from that instead; the
+dev server applies the module's migrations to it, which is a quick way to
+check them on the database a host actually runs:
+
+```bash
+DB_DSN='postgres://user:secret@127.0.0.1:5432/app' go run ./install/ignore/devserver
 ```
 
 ## Use in a host application
@@ -25,6 +64,42 @@ import (
 	_ "github.com/daqing/airway-tencentcloud-plugin"
 )
 ```
+
+The module holds two plugins and this one import registers both:
+`tencentcloud` (the debug endpoints, local mode only) and `smsverify` (the
+public phone verification endpoints). `plugin:install` resolves a plugin from
+the module path, so it always names the install `tencentcloud`; the tables
+both plugins use are compiled in rather than installed (see
+[Install layout](#install-layout)).
+
+The import is also how the host gets the plugins' Go API — the code is
+compiled into the host binary, so calls stay in-process and no HTTP hop is
+involved:
+
+```go
+import "github.com/daqing/airway-tencentcloud-plugin/install/lib/tencentcloud"
+
+result, err := tencentcloud.SendSms(ctx, tencentcloud.SendSmsInput{
+	PhoneNumbers:     []string{"+8618501234444"},
+	TemplateID:       "1234567",
+	TemplateParamSet: []string{"654321"},
+})
+if err != nil {
+	// the request never reached Tencent Cloud
+}
+
+for _, status := range result.SendStatuses {
+	if status.Code != "Ok" {
+		// this number was rejected; status.Message says why
+	}
+}
+```
+
+A nil `err` only means Tencent Cloud accepted the request — each number can
+still fail, so check every `SendStatus.Code`, where `"Ok"` means that number
+was accepted. The `install/lib/tencentcloud` package returns plugin-owned
+types and never leaks SDK types, so the host does not depend on the Tencent
+Cloud SDK itself.
 
 ## Configuration
 
@@ -42,16 +117,31 @@ The plugin reads its configuration from environment variables on first use
 Missing variables are reported on the first API call, not at boot, so hosts
 that haven't configured the plugin yet still start normally.
 
-## SMS API
+## HTTP endpoints (local development only)
 
-Routes are mounted at `/api/v1/tencentcloud`.
+`Routes` mounts the two endpoints below at `/api/v1/tencentcloud` **only when
+the host runs in local mode** (`AIRWAY_ENV=local`). A production host serves
+neither of them and calls the Go API instead. Neither endpoint authenticates
+its caller: `/sms/send` spends real SMS quota for whoever can reach it, and
+`/sms/send/mock` returns the verification code in the response body.
+
+To serve them outside local mode, mount them yourself behind your own
+authentication — never on a public router:
+
+```go
+tencentcloud_api.DebugRoutes(r.Group("/api/v1/tencentcloud", requireInternalAuth))
+```
+
+Because the routes follow the mode, `airway openapi:generate` documents them
+only when it runs with `AIRWAY_ENV=local`; the generated document always
+matches what that binary actually serves.
 
 ### Send SMS
 
 `POST /api/v1/tencentcloud/sms/send`
 
 ```bash
-curl -X POST http://localhost:3000/api/v1/tencentcloud/sms/send \
+curl -X POST http://127.0.0.1:3000/api/v1/tencentcloud/sms/send \
   -H 'Content-Type: application/json' \
   -d '{
         "phone_numbers": ["+8618501234444"],
@@ -90,18 +180,237 @@ each number's status):
 }
 ```
 
+### Mock send (local debugging)
+
+`POST /api/v1/tencentcloud/sms/send/mock`
+
+Accepts the same request fields, applies the same validation, and renders
+the exact same response as [Send SMS](#send-sms) — same fields, same
+types, nothing added or removed — so a client can switch between the two
+endpoints without any code changes. The only difference: nothing reaches
+Tencent Cloud (no credentials or SMS configuration needed), and the
+generated verification code comes back as the value of `request_id` and
+each status's `serial_no` (a six-digit string, leading zeros preserved).
+
+> This endpoint hands a verification code to anyone who calls it, which is
+> why it is registered only in local mode. Never mount it anywhere else.
+
+```json
+{
+  "code": 0,
+  "data": {
+    "request_id": "654321",
+    "send_status_set": [
+      {
+        "serial_no": "654321",
+        "phone_number": "+8618501234444",
+        "fee": 1,
+        "session_context": "order-42",
+        "code": "Ok",
+        "message": "mock send success"
+      }
+    ]
+  },
+  "message": ""
+}
+```
+
+## Phone verification (`smsverify`)
+
+The module's second plugin implements what a login or sign-up screen needs: it
+issues a verification code over SMS, caps how often a phone number and an IP
+may ask for one, demands an image captcha once an IP gets greedy, and checks
+the code back.
+
+Unlike the tencentcloud debug routes, **these two endpoints are mounted in
+every environment** — `AIRWAY_ENV` does not change them. Clients call them
+directly, and the rate limits below, not authentication, are what protects
+them. The plugin mounts at `/api/v1`, claiming that shared prefix: a host or
+another plugin that registers `/api/v1/sms_codes` or `/api/v1/captcha` will
+collide with it at boot.
+
+Both tables it needs (`sms_verifications`, `captchas`) are Go migrations
+compiled into the module, so the host's usual `go run . db:migrate` creates
+them and `plugin:install` has nothing to copy. They are rendered for the
+host's database, so PostgreSQL, MySQL and SQLite all work. Until that runs,
+both endpoints answer `10000` with the database's own table-not-found error.
+
+> The migrations create the tables, they do not adopt existing ones. A host
+> that already has them — from its own migrations, say — either drops them and
+> lets `db:migrate` recreate them, or, if its tables already match the schema
+> this module defines, records the versions so the run skips them instead of
+> failing on the existing tables:
+>
+> ```sql
+> INSERT INTO schema_migrations (version, applied_at)
+> VALUES ('20260929153501', NOW()), ('20260929153502', NOW());
+> ```
+
+### Send a code
+
+`POST /api/v1/sms_codes`
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/v1/sms_codes \
+  -H 'Content-Type: application/json' \
+  -d '{"phone":"18501234444"}'
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `phone` | yes | Mainland China mobile number: `1[3-9]` followed by nine digits, no country code |
+| `captcha_token` | once a captcha is required | The `token` from [Get a captcha](#get-a-captcha) |
+| `captcha_answer` | once a captcha is required | The four digits the image shows |
+
+```json
+{"code": 0, "data": {"sent": true}, "message": ""}
+```
+
+Under the mock driver the code comes back too, so a client can be tested
+locally without an SMS account:
+
+```json
+{"code": 0, "data": {"dev_code": "017099", "sent": true}, "message": ""}
+```
+
+Every response is HTTP 200 — the outcome is in `code`:
+
+| `code` | Meaning |
+| --- | --- |
+| `0` | Code sent |
+| `40001` | Unreadable body, invalid phone number, or a wrong captcha answer |
+| `40301` | A captcha is required; `data` carries `captcha_required: true` and `captcha_url` |
+| `42901` | Rate limited |
+| `10000` | Anything else — delivery rejected, configuration missing; `message` says what |
+
+### Get a captcha
+
+`GET /api/v1/captcha`
+
+Returns a four-digit captcha bound to the caller's IP, rendered as a base64
+PNG so the client needs no second request. `token` is what the send endpoint
+wants back as `captcha_token`:
+
+```json
+{
+  "code": 0,
+  "data": {
+    "token": "16923e222c57be8d",
+    "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJYAAAA0CAIAAADnt1ZQ..."
+  },
+  "message": ""
+}
+```
+
+Every response is HTTP 200, as on the send endpoint:
+
+| `code` | Meaning |
+| --- | --- |
+| `0` | Captcha issued |
+| `42901` | This IP is over its hourly captcha cap |
+| `10000` | Anything else; `message` says what |
+
+Captchas live for 10 minutes and are single use; a wrong answer consumes one
+too, so guessing cannot be spread over many attempts. An IP may ask for 30 per
+hour — past that the endpoint answers `42901`, and the captcha is neither
+generated nor stored, so a refusal costs only the count query.
+
+### Limits
+
+| Limit | Value |
+| --- | --- |
+| Resend cooldown, per phone | 60 seconds |
+| Sends, per phone | 10 per 24 hours |
+| Sends, per IP | 30 per 24 hours |
+| Captcha required, per IP | past 5 sends per hour |
+| Captchas issued, per IP | 30 per hour |
+| Code lifetime | 5 minutes |
+| Wrong guesses per code | 5 |
+
+The per-IP limits use the client IP from the request, so a host behind a proxy
+must call `router.SetTrustedProxies` — gin trusts every proxy by default,
+which lets a caller rotate `X-Forwarded-For` and slip past them. The per-phone
+limits do not depend on that.
+
+### Go API
+
+A host that wants its own endpoints, or that wants to decide what a verified
+number means, calls the package directly. `Send` is what the HTTP handler
+wraps; `Verify` deliberately has no endpoint, because issuing a session or
+creating the user is the host's decision:
+
+```go
+import (
+	"github.com/daqing/airway-tencentcloud-plugin/install/lib/captcha"
+	"github.com/daqing/airway-tencentcloud-plugin/install/lib/smsverify"
+)
+
+result, err := smsverify.Send(ctx, "18501234444", clientIP, captchaToken, captchaAnswer)
+if errors.Is(err, smsverify.ErrCaptchaRequired) {
+	// serve a captcha, then ask again with captcha_token and captcha_answer
+}
+if errors.Is(err, smsverify.ErrRateLimited) {
+	// cooldown or a daily cap; tell the user to wait
+}
+
+if err := smsverify.Verify(ctx, "18501234444", code); err != nil {
+	// ErrCodeInvalid - missing, expired, consumed, or simply wrong
+	// ErrCodeTooManyAttempts - too many guesses; ask for a new code
+}
+
+// what the captcha endpoint wraps, for a host rendering its own page:
+// the token goes back to the client, png is the image to serve.
+token, png, err := captcha.Issue(ctx, clientIP) // ErrRateLimited past 30/hour
+ok := captcha.Verify(ctx, clientIP, token, answer)
+```
+
+`Verify` consumes the code, so it returns nil at most once per code. It
+reports "wrong code" and "no code in flight" the same way on purpose: a caller
+must not be able to probe which numbers have a code outstanding. `captcha.Verify`
+consumes its captcha the same way, and the first call wins whether or not the
+answer was right.
+
+### Delivery
+
+`SMS_DRIVER` selects the channel:
+
+| Value | Effect |
+| --- | --- |
+| `mock` | Logs the code instead of sending it, and returns it as `dev_code` |
+| `tencent` | Sends a real template SMS through Tencent Cloud |
+
+Leave it unset and the driver follows the environment: `mock` when
+`AIRWAY_ENV=local`, `tencent` everywhere else — so a production host cannot
+fall back to mock by forgetting to set it. Any other value is an error rather
+than a fallback.
+
+The `tencent` driver needs `TENCENTCLOUD_SMS_TEMPLATE_ID` (an approved
+template taking the code as its single parameter) alongside the
+`TENCENTCLOUD_*` variables above, and sends to `+86` plus the number.
+
+> `SMS_DRIVER=mock` outside local mode still sends nothing and still hands the
+> code back in the response. Never set it on a production host.
+
 ## Install layout
 
 Content reaches the host in two ways: code under `install/lib/` is compiled
-into the host binary through this import, while the files under
-`install/host/` and `install/deps/` are copied into the host project by
-`plugin:install` — deploy configs, companion services, SQL migrations, the
-things tools outside the Go build read from disk. `install/ignore/` and
+into the host binary through this import, while files under `install/deps/`
+are copied into the host project by `plugin:install` — deploy configs,
+companion services, the things tools outside the Go build read from disk.
+This module ships nothing else: it has no `install/host/` tree, and the
+tables behind `smsverify` are the compiled kind. `install/ignore/` and
 anything matching the root `.gitignore` never leave the plugin checkout.
 
-To ship SQL migrations, add `<version>_<name>.up.sql` / `.down.sql` files
-under `install/host/db/migrate/` and expose them with
-`plugin.MigrationProvider`.
+Ship the schema as a Go migration — `schema.RegisterChange` in an `init()`
+under `install/lib/migrations/`, blank-imported so every host binary carries
+it — when the plugin should own the tables: `lib/migrate` renders their DDL
+for the host's database, and `db:migrate` picks the definitions up with no
+install step. Ship `<version>_<name>.up.sql` / `.down.sql` files under
+`install/host/db/migrate/`, exposed with `plugin.MigrationProvider`, when the
+host should be able to read or edit the SQL: the installer gives each one a
+fresh timestamp in the host's `db/migrate/` (skipping a name the host already
+has) and the engine then runs those files verbatim, so they have to fit the
+host's database by themselves.
 
 To ship extra project files (companion services, deploy configs, ...), put
 them under `install/deps/tencentcloud/` — `plugin:install` merges the whole

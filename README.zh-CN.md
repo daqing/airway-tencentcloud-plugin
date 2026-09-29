@@ -40,6 +40,14 @@ curl -sX POST localhost:3000/api/v1/sms_codes \
 而不是真的发出去。tencentcloud 的 mock 接口同样无需配置;真实的 `/sms/send`
 在首次调用时读取 `TENCENTCLOUD_*` 环境变量(见「配置」一节)。
 
+把 `DB_DSN` 指向 PostgreSQL 或 MySQL,开发服务器就改从那个库提供接口,并顺带
+把模块的迁移应用上去 —— 想确认迁移在宿主真正使用的数据库上跑得通,这是最
+快的办法:
+
+```bash
+DB_DSN='postgres://user:secret@127.0.0.1:5432/app' go run ./install/ignore/devserver
+```
+
 ## 在宿主项目中使用
 
 ```bash
@@ -56,8 +64,8 @@ import (
 
 模块里有两个插件,这一次导入会把两个都注册上:`tencentcloud`(调试端点,
 仅本地模式)和 `smsverify`(公开的手机号验证码端点)。`plugin:install` 按模块
-路径解析插件,所以安装名固定是 `tencentcloud`,安装的也是整个模块的迁移 ——
-两个插件共用的表。
+路径解析插件,所以安装名固定是 `tencentcloud`;两个插件共用的表是编译进来的,
+不需要安装(见[安装布局](#安装布局))。
 
 这次导入同样是宿主拿到插件 Go API 的方式 —— 代码被编译进宿主二进制,调用
 全程在进程内,不经过 HTTP:
@@ -206,6 +214,19 @@ status):
 鉴权。插件挂在 `/api/v1` 下,占用了这个公共前缀:宿主或其他插件如果也注册
 `/api/v1/sms_codes` 或 `/api/v1/captcha`,启动时会直接冲突。
 
+它需要的两张表(`sms_verifications`、`captchas`)是编译进模块的 Go 迁移,
+所以宿主常规的 `go run . db:migrate` 会建表,`plugin:install` 没有任何文件要
+拷。建表语句按宿主所用的数据库生成,PostgreSQL、MySQL、SQLite 都能直接用。
+在这之前两个端点都返回 `10000`,并带上数据库自己的「表不存在」错误。
+
+> 迁移只负责建表,不会接管已存在的表。宿主若已经通过自己的迁移建好了这两张
+> 表,得先把这个模块用的版本号记进去,否则 `db:migrate` 会因为表已存在而失败:
+>
+> ```sql
+> INSERT INTO schema_migrations (version, applied_at)
+> VALUES ('20260929153501', NOW()), ('20260929153502', NOW());
+> ```
+
 ### 发送验证码
 
 `POST /api/v1/sms_codes`
@@ -260,9 +281,17 @@ mock 驱动下验证码也会一并返回,便于本地联调而不必开通短�
 }
 ```
 
+与发码端点一样,所有响应都是 HTTP 200:
+
+| `code` | 含义 |
+| --- | --- |
+| `0` | 已签发 |
+| `42901` | 该 IP 已达每小时验证码上限 |
+| `10000` | 其它错误,具体原因看 `message` |
+
 验证码有效期 10 分钟且只能使用一次;答错同样会作废,所以无法把猜测分摊到
-多次尝试上。同一 IP 每小时最多索取 30 张 —— 超过后返回 `42901`,既不会生成
-也不会落库。
+多次尝试上。同一 IP 每小时最多索取 30 张 —— 超过后返回 `42901`,既不生成
+也不落库,所以被拒的请求只花掉一次计数查询。
 
 ### 限流参数
 
@@ -287,22 +316,33 @@ mock 驱动下验证码也会一并返回,便于本地联调而不必开通短�
 因为签发会话、创建用户这类决定属于宿主:
 
 ```go
-import "github.com/daqing/airway-tencentcloud-plugin/install/lib/smsverify"
+import (
+	"github.com/daqing/airway-tencentcloud-plugin/install/lib/captcha"
+	"github.com/daqing/airway-tencentcloud-plugin/install/lib/smsverify"
+)
 
 result, err := smsverify.Send(ctx, "18501234444", clientIP, captchaID, captchaAnswer)
 if errors.Is(err, smsverify.ErrCaptchaRequired) {
 	// 下发一张验证码,再带 captcha_id 与 captcha_answer 重试
+}
+if errors.Is(err, smsverify.ErrRateLimited) {
+	// 冷却期未过或触达日上限,提示用户稍后再试
 }
 
 if err := smsverify.Verify(ctx, "18501234444", code); err != nil {
 	// ErrCodeInvalid —— 不存在、已过期、已消费,或就是错的
 	// ErrCodeTooManyAttempts —— 试错次数用尽,让用户重新获取
 }
+
+// 验证码端点包的就是这两个,宿主自己画页面时可以直接用:
+// id 交给客户端,png 是直接可返回的图片。
+id, png, err := captcha.Issue(ctx, clientIP) // 超过每小时 30 张返回 ErrRateLimited
+ok := captcha.Verify(ctx, clientIP, id, answer)
 ```
 
 `Verify` 会消费验证码,所以同一个验证码最多只会返回一次 nil。「验证码错误」和
 「该号码没有在途验证码」刻意返回同一个错误:调用方不该能借此探测哪些号码正在
-收验证码。
+收验证码。`captcha.Verify` 同样会消费验证码,而且无论答对答错都是先到者生效。
 
 ### 投递方式
 
@@ -327,18 +367,20 @@ if err := smsverify.Verify(ctx, "18501234444", code); err != nil {
 ## 安装布局
 
 内容通过两种方式到达宿主:`install/lib/` 下的代码通过空导入编译进宿主
-二进制;`install/host/` 和 `install/deps/` 下的文件由 `plugin:install`
-拷贝进宿主项目 —— 部署配置、伴生服务、SQL 迁移等 Go 构建之外的磁盘
-文件。`install/ignore/` 和根 `.gitignore` 匹配的内容永远不会离开插件
-仓库。
+二进制;`install/deps/` 下的文件由 `plugin:install` 拷贝进宿主项目 ——
+部署配置、伴生服务、这些 Go 构建之外、由磁盘上的工具读取的东西。本模块
+不再发布别的:`install/host/` 目录已经没有了,`smsverify` 背后的两张表属于
+「编译进去」那一类。`install/ignore/` 和根 `.gitignore` 匹配的内容永远不会
+离开插件仓库。
 
-要发布 SQL 迁移,在 `install/host/db/migrate/` 下添加
-`<version>_<name>.up.sql` / `.down.sql` 文件,并通过
-`plugin.MigrationProvider` 暴露。本模块附带的迁移(`smsverify` 背后的两张表)
-是按 PostgreSQL 写的(`BIGSERIAL`、`TIMESTAMPTZ`、`DEFAULT NOW()`),宿主若用
-MySQL 或 SQLite,需要在 `db:migrate` 之前自行转换 —— 尽管其上的 Go 代码本身
-与方言无关。`plugin:install` 会跳过宿主 `db/migrate/` 中已存在的同名迁移,所以
-装进一个已经自带这两张表的项目是空操作。
+表结构交给插件自己管时,用 Go 迁移发布 —— 在 `install/lib/migrations/` 下的
+`init()` 里调用 `schema.RegisterChange`,并空导入,让每个宿主二进制都带着这些
+定义:`lib/migrate` 会针对宿主的数据库生成 DDL,`db:migrate` 无需任何安装
+步骤就能看到它们。需要让宿主能读能改那段 SQL 时,才改用
+`install/host/db/migrate/` 下的 `<version>_<name>.up.sql` / `.down.sql`,
+并通过 `plugin.MigrationProvider` 暴露:安装器会给每个文件在宿主的
+`db/migrate/` 里分配一个新时间戳(宿主已有同名文件则跳过),之后由迁移引擎
+原样执行,所以那些 SQL 必须自己适配宿主的数据库。
 
 要发布额外的项目文件(伴生服务、部署配置等),放在
 `install/deps/tencentcloud/` 下 —— `plugin:install` 会把整个目录树合并

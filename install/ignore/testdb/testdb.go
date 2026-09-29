@@ -1,54 +1,71 @@
 // Package testdb provides the in-memory SQLite database the tests and the dev
 // server run against. It lives under install/ignore/, so it is never copied
-// into a host project; a real host runs the migrations in
-// install/host/db/migrate instead.
+// into a host project; a real host runs the same migrations itself.
 package testdb
 
-import "github.com/daqing/airway/lib/repo"
+import (
+	"fmt"
+	"io"
+	"sync/atomic"
+	"testing/fstest"
 
-// Schema is the SQLite spelling of install/host/db/migrate: no BIGSERIAL, no
-// TIMESTAMPTZ, and DATETIME for timestamps, matching the framework's own test
-// schema. Keep the two in step.
-const Schema = `
-CREATE TABLE sms_verifications (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  phone TEXT NOT NULL,
-  code TEXT NOT NULL,
-  ip TEXT NOT NULL,
-  expires_at DATETIME NOT NULL,
-  consumed BOOLEAN NOT NULL DEFAULT FALSE,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  created_at DATETIME NOT NULL,
-  updated_at DATETIME NOT NULL
-);
-CREATE INDEX index_sms_verifications_on_phone_created_at ON sms_verifications (phone, created_at);
-CREATE INDEX index_sms_verifications_on_ip_created_at ON sms_verifications (ip, created_at);
+	"github.com/daqing/airway/lib/migrate"
+	"github.com/daqing/airway/lib/repo"
 
-CREATE TABLE captchas (
-  id TEXT PRIMARY KEY,
-  answer TEXT NOT NULL,
-  ip TEXT NOT NULL,
-  expires_at DATETIME NOT NULL,
-  consumed BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at DATETIME NOT NULL,
-  updated_at DATETIME NOT NULL
-);
-CREATE INDEX index_captchas_on_ip_created_at ON captchas (ip, created_at);
-`
+	// Registers the module's Go migrations with lib/migrate.
+	_ "github.com/daqing/airway-tencentcloud-plugin/install/lib/migrations"
+)
 
-// Setup opens a fresh in-memory SQLite database with Schema applied. The repo
-// package caps this driver at one connection, so the :memory: database stays
-// visible to every query.
+var databases atomic.Uint64
+
+// Setup opens a fresh in-memory SQLite database with the module's migrations
+// applied.
+//
+// The database is named and shared-cache because the migrate engine opens a
+// connection of its own: with a plain :memory: DSN it would migrate a second,
+// empty database and every query would then fail on a missing table. The name
+// is unique per call, so each test starts from an empty schema.
 func Setup() (*repo.DB, error) {
-	db, err := repo.SetupDBWithDriver("sqlite", ":memory:")
+	return SetupOn(fmt.Sprintf("file:testdb-%d?mode=memory&cache=shared", databases.Add(1)))
+}
+
+// SetupOn opens the database the DSN points at — PostgreSQL, MySQL or SQLite —
+// and applies the module's migrations to it. The dev server uses this to run
+// against a real server, which is how the migrations get exercised on a dialect
+// other than SQLite.
+func SetupOn(dsn string) (*repo.DB, error) {
+	db, err := repo.SetupDB(dsn)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := db.Conn().Exec(Schema); err != nil {
+	if err := runMigrations(db, dsn); err != nil {
 		db.Close()
 		return nil, err
 	}
 
 	return db, nil
+}
+
+func runMigrations(db *repo.DB, dsn string) error {
+	// The registered DSL migrations are the whole schema; there are no SQL
+	// files to walk, but the engine requires a filesystem either way.
+	if err := migrate.Run(migrate.Options{
+		DSN:        dsn,
+		Migrations: fstest.MapFS{},
+		Out:        io.Discard,
+	}); err != nil {
+		return err
+	}
+
+	// migrate.Run reports success on an empty registry too, which would leave
+	// every test failing on a missing table with no hint as to why, so probe
+	// what the queries need.
+	for _, table := range []string{"sms_verifications", "captchas"} {
+		if _, err := db.Conn().Exec("SELECT 1 FROM " + table + " LIMIT 1"); err != nil {
+			return fmt.Errorf("table %s: %w", table, err)
+		}
+	}
+
+	return nil
 }

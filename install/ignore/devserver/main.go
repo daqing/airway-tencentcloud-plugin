@@ -7,9 +7,11 @@
 // listens on 127.0.0.1:3000 by default; override with LISTEN.
 //
 // Storage is an in-memory SQLite database — this stands in for the host's
-// migrations, which a real host runs itself. The tencentcloud debug endpoints
-// need no configuration; the real /sms/send and the smsverify endpoints read
-// the TENCENTCLOUD_* / SMS_DRIVER environment variables on use.
+// migrations, which a real host runs itself. Set DB_DSN to serve from a real
+// PostgreSQL or MySQL instead, which also applies the module's migrations to it.
+// The tencentcloud debug endpoints need no configuration; the real /sms/send and
+// the smsverify endpoints read the TENCENTCLOUD_* / SMS_DRIVER environment
+// variables on use.
 package main
 
 import (
@@ -29,7 +31,7 @@ func main() {
 		addr = "127.0.0.1:3000"
 	}
 
-	if _, err := testdb.Setup(); err != nil {
+	if err := setupDB(); err != nil {
 		log.Fatal(err)
 	}
 
@@ -40,4 +42,14 @@ func main() {
 	if err := r.Run(addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func setupDB() error {
+	if dsn := os.Getenv("DB_DSN"); dsn != "" {
+		_, err := testdb.SetupOn(dsn)
+		return err
+	}
+
+	_, err := testdb.Setup()
+	return err
 }

@@ -43,6 +43,14 @@ code back as `dev_code` instead of sending it. The mock tencentcloud endpoint
 needs no configuration either; the real `/sms/send` reads the `TENCENTCLOUD_*`
 environment variables (see Configuration) on first use.
 
+Point `DB_DSN` at a PostgreSQL or MySQL server to serve from that instead; the
+dev server applies the module's migrations to it, which is a quick way to
+check them on the database a host actually runs:
+
+```bash
+DB_DSN='postgres://user:secret@127.0.0.1:5432/app' go run ./install/ignore/devserver
+```
+
 ## Use in a host application
 
 ```bash
@@ -60,8 +68,9 @@ import (
 The module holds two plugins and this one import registers both:
 `tencentcloud` (the debug endpoints, local mode only) and `smsverify` (the
 public phone verification endpoints). `plugin:install` resolves a plugin from
-the module path, so it always names the install `tencentcloud` and installs
-the module's migrations — the tables both plugins use.
+the module path, so it always names the install `tencentcloud`; the tables
+both plugins use are compiled in rather than installed (see
+[Install layout](#install-layout)).
 
 The import is also how the host gets the plugins' Go API — the code is
 compiled into the host binary, so calls stay in-process and no HTTP hop is
@@ -220,6 +229,22 @@ them. The plugin mounts at `/api/v1`, claiming that shared prefix: a host or
 another plugin that registers `/api/v1/sms_codes` or `/api/v1/captcha` will
 collide with it at boot.
 
+Both tables it needs (`sms_verifications`, `captchas`) are Go migrations
+compiled into the module, so the host's usual `go run . db:migrate` creates
+them and `plugin:install` has nothing to copy. They are rendered for the
+host's database, so PostgreSQL, MySQL and SQLite all work. Until that runs,
+both endpoints answer `10000` with the database's own table-not-found error.
+
+> The migrations create the tables, they do not adopt existing ones. A host
+> that already has them — from its own migrations, say — must record the
+> versions this module uses before `db:migrate`, or that run fails on the
+> existing tables:
+>
+> ```sql
+> INSERT INTO schema_migrations (version, applied_at)
+> VALUES ('20260929153501', NOW()), ('20260929153502', NOW());
+> ```
+
 ### Send a code
 
 `POST /api/v1/sms_codes`
@@ -275,10 +300,18 @@ PNG so the client needs no second request:
 }
 ```
 
+Every response is HTTP 200, as on the send endpoint:
+
+| `code` | Meaning |
+| --- | --- |
+| `0` | Captcha issued |
+| `42901` | This IP is over its hourly captcha cap |
+| `10000` | Anything else; `message` says what |
+
 Captchas live for 10 minutes and are single use; a wrong answer consumes one
 too, so guessing cannot be spread over many attempts. An IP may ask for 30 per
-hour — past that the response is `42901`, and the captcha is neither generated
-nor stored.
+hour — past that the endpoint answers `42901`, and the captcha is neither
+generated nor stored, so a refusal costs only the count query.
 
 ### Limits
 
@@ -305,22 +338,35 @@ wraps; `Verify` deliberately has no endpoint, because issuing a session or
 creating the user is the host's decision:
 
 ```go
-import "github.com/daqing/airway-tencentcloud-plugin/install/lib/smsverify"
+import (
+	"github.com/daqing/airway-tencentcloud-plugin/install/lib/captcha"
+	"github.com/daqing/airway-tencentcloud-plugin/install/lib/smsverify"
+)
 
 result, err := smsverify.Send(ctx, "18501234444", clientIP, captchaID, captchaAnswer)
 if errors.Is(err, smsverify.ErrCaptchaRequired) {
 	// serve a captcha, then ask again with captcha_id and captcha_answer
+}
+if errors.Is(err, smsverify.ErrRateLimited) {
+	// cooldown or a daily cap; tell the user to wait
 }
 
 if err := smsverify.Verify(ctx, "18501234444", code); err != nil {
 	// ErrCodeInvalid - missing, expired, consumed, or simply wrong
 	// ErrCodeTooManyAttempts - too many guesses; ask for a new code
 }
+
+// what the captcha endpoint wraps, for a host rendering its own page:
+// the id goes back to the client, png is the image to serve.
+id, png, err := captcha.Issue(ctx, clientIP) // ErrRateLimited past 30/hour
+ok := captcha.Verify(ctx, clientIP, id, answer)
 ```
 
 `Verify` consumes the code, so it returns nil at most once per code. It
 reports "wrong code" and "no code in flight" the same way on purpose: a caller
-must not be able to probe which numbers have a code outstanding.
+must not be able to probe which numbers have a code outstanding. `captcha.Verify`
+consumes its captcha the same way, and the first call wins whether or not the
+answer was right.
 
 ### Delivery
 
@@ -346,21 +392,23 @@ template taking the code as its single parameter) alongside the
 ## Install layout
 
 Content reaches the host in two ways: code under `install/lib/` is compiled
-into the host binary through this import, while the files under
-`install/host/` and `install/deps/` are copied into the host project by
-`plugin:install` — deploy configs, companion services, SQL migrations, the
-things tools outside the Go build read from disk. `install/ignore/` and
+into the host binary through this import, while files under `install/deps/`
+are copied into the host project by `plugin:install` — deploy configs,
+companion services, the things tools outside the Go build read from disk.
+This module ships nothing else: it has no `install/host/` tree, and the
+tables behind `smsverify` are the compiled kind. `install/ignore/` and
 anything matching the root `.gitignore` never leave the plugin checkout.
 
-To ship SQL migrations, add `<version>_<name>.up.sql` / `.down.sql` files
-under `install/host/db/migrate/` and expose them with
-`plugin.MigrationProvider`. The migrations this module ships — the two tables
-behind `smsverify` — are written for PostgreSQL (`BIGSERIAL`, `TIMESTAMPTZ`,
-`DEFAULT NOW()`); a host on MySQL or SQLite must translate them before
-`db:migrate`, even though the Go code above them stays dialect-neutral.
-`plugin:install` skips a migration whose name it already finds in the host's
-`db/migrate/`, so installing into a project that already has these tables from
-its own migrations is a no-op.
+Ship the schema as a Go migration — `schema.RegisterChange` in an `init()`
+under `install/lib/migrations/`, blank-imported so every host binary carries
+it — when the plugin should own the tables: `lib/migrate` renders their DDL
+for the host's database, and `db:migrate` picks the definitions up with no
+install step. Ship `<version>_<name>.up.sql` / `.down.sql` files under
+`install/host/db/migrate/`, exposed with `plugin.MigrationProvider`, when the
+host should be able to read or edit the SQL: the installer gives each one a
+fresh timestamp in the host's `db/migrate/` (skipping a name the host already
+has) and the engine then runs those files verbatim, so they have to fit the
+host's database by themselves.
 
 To ship extra project files (companion services, deploy configs, ...), put
 them under `install/deps/tencentcloud/` — `plugin:install` merges the whole

@@ -10,8 +10,9 @@ applications APIs for Tencent Cloud services (SMS today) and a complete phone
 
 The module holds **two plugins**. One blank import registers both, because
 `plugin.Register` runs in one `init()`; `plugin:install` resolves a plugin
-from the module path, so it always installs under the name `tencentcloud` and
-installs the module's migrations — the tables `smsverify` uses.
+from the module path, so it always installs under the name `tencentcloud`.
+There is no file channel for the schema: the tables `smsverify` uses are Go
+migrations compiled in (see Migrations).
 
 - `plugin.go` — both plugin entry points.
   - `Plugin` — `Name()` `tencentcloud`, `MountPath()` `/api/v1/tencentcloud`,
@@ -30,16 +31,16 @@ installs the module's migrations — the tables `smsverify` uses.
   `install/lib/smsverify/` is the send/verify/rate-limit service and
   `install/lib/captcha/` the image captcha (standard library only: `image` +
   `image/png`, no fonts, no third-party packages).
-- `install/host/` — files copied verbatim into the host project's own tree by
-  `plugin:install`. SQL migrations go in `install/host/db/migrate/`; the ones
-  here are PostgreSQL-only (`BIGSERIAL`, `TIMESTAMPTZ`, `DEFAULT NOW()`).
+  `install/lib/migrations/` is the schema (see Migrations).
 - `install/deps/tencentcloud/` — companion services / deploy configs merged
-  into the host project's `deps/` directory (existing files are kept).
+  into the host project's `deps/` directory (existing files are kept). This
+  module has no `install/host/` tree: everything a host needs is either
+  compiled in or, here, merged into `deps/`.
 - `install/ignore/` — anything here never reaches a host project; the local
   dev server lives at `install/ignore/devserver/` and the shared in-memory
-  SQLite schema at `install/ignore/testdb/`. `ignore/` directories inside
-  `install/host/` and `install/deps/` are skipped too, as are files matching
-  the root `.gitignore`.
+  SQLite database at `install/ignore/testdb/`. `ignore/` directories inside
+  `install/deps/` are skipped too, as are files matching the root
+  `.gitignore`.
 
 ## Commands
 
@@ -50,7 +51,8 @@ go vet ./...                                            # lint
 go test ./...                                           # unit tests (stdlib testing, no assertion libs)
 go run ./install/ignore/devserver                       # serve the API without an airway host
                                                         # (127.0.0.1:3000, override with LISTEN)
-                                                        # for curl testing, on in-memory SQLite;
+                                                        # for curl testing, on in-memory SQLite
+                                                        # (DB_DSN points it at PostgreSQL/MySQL);
                                                         # AIRWAY_ENV=local selects the mock SMS driver
 ```
 
@@ -81,13 +83,19 @@ go run . plugin:install github.com/daqing/airway-tencentcloud-plugin
   200) via `github.com/daqing/airway/lib/render`. Where a body-level error
   code has to carry a `data` payload, `sms_codes_api` wraps `c.JSON` in a
   local `fail` helper, because `render.ErrorCodeMsg` hard-codes `data: null`.
-- Migrations: `<version>_<name>.up.sql` / `.down.sql` pairs under
-  `install/host/db/migrate/`, exposed to the host via
-  `plugin.MigrationProvider`. Both plugins implement the provider and return
-  the same `embed.FS` — the installer reads whichever one it finds, and
-  installs per module, not per plugin. `pluginMigrationInstalled` compares
-  only the version-stripped name, so a host that already has a migration of
-  the same name keeps its own copy and the plugin's is skipped.
+- Migrations: Go, not SQL. `install/lib/migrations` registers one
+  `schema.RegisterChange` per table in `init()`, and `plugin.go` blank-imports
+  the package so every host binary carries the definitions — `plugin:install`
+  copies nothing, and the host's own `go run . db:migrate` creates the tables
+  from them. `lib/migrate` compiles the ops per dialect, so PostgreSQL, MySQL
+  and SQLite all get correct DDL, which the SQL files this replaced did not
+  (they were PostgreSQL-only). Two things the DSL decides: the versions are the
+  ones those SQL files used (`20260929153501`, `20260929153502`), so a host that
+  already applied them skips these rather than re-creating the tables; and the
+  down migrations are derived by reversing the up ops, so anything that cannot
+  be reversed needs `m.Reversible` or an explicit `schema.Register`. The DSL's
+  only primary key builder is `Table.ID()`, which is autoincrement, so
+  `captchas` keys on a unique `id VARCHAR(32)` column instead of a primary key.
 - Nested-module gotcha: any `go.mod` under `install/deps/` must be shipped as
   `go.mod.templ` (installed as `go.mod`) — Go module zips drop nested modules.
   A real `go.mod` may sit beside its `.templ` for local builds; `plugin:install`
@@ -118,9 +126,11 @@ go run . plugin:install github.com/daqing/airway-tencentcloud-plugin
   REPL models, not just this one's.
 - Testing: stdlib `testing` with `t.Setenv` + table-driven subtests; no
   assertion libraries, no `t.Parallel` (tests mutate package env state).
-  Databases come from `install/ignore/testdb` (in-memory SQLite, schema
-  mirroring the migrations by hand — the framework has no migration runner in
-  this version), so no Postgres and no Docker. External boundaries are stubbed,
+  Databases come from `install/ignore/testdb` — an in-memory SQLite database
+  with the module's real migrations applied by `lib/migrate`, so no Postgres
+  and no Docker, and no schema to keep in step by hand. Point the dev server at
+  a real server with `DB_DSN` when a change has to be checked on another
+  dialect. External boundaries are stubbed,
   never hit for real: `tencentcloud.sendSmsCall` (in-package) and
   `tencentcloud_api.sendSms` replace the call chain, `resetForTest` re-arms
   the lazy `sync.Once` setup between configurations, and `smsverify.deliverSMS`

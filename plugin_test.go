@@ -1,11 +1,10 @@
 package tencentcloudplugin
 
 import (
-	"io/fs"
 	"slices"
-	"strings"
 	"testing"
 
+	"github.com/daqing/airway/lib/migrate/schema"
 	"github.com/daqing/airway/lib/plugin"
 	"github.com/gin-gonic/gin"
 )
@@ -116,47 +115,33 @@ func TestSmsVerifyPluginRoutesAreAlwaysMounted(t *testing.T) {
 	}
 }
 
-// TestPluginsProvideMigrations covers the installer's lookup: it resolves the
-// plugin by module, which yields the name "tencentcloud", and reads the
-// migrations from whichever provider it finds. Both implement the interface so
-// that lookup can never miss and fall back to the module zip.
-func TestPluginsProvideMigrations(t *testing.T) {
-	for _, p := range []plugin.Plugin{Plugin{}, SmsVerifyPlugin{}} {
-		if _, ok := p.(plugin.MigrationProvider); !ok {
-			t.Fatalf("%s does not implement plugin.MigrationProvider", p.Name())
-		}
-	}
-}
-
-// TestMigrationPairsAreComplete guards a hard failure in plugin:install, which
-// refuses an up migration with no down beside it.
-func TestMigrationPairsAreComplete(t *testing.T) {
-	ups := map[string]bool{}
-	downs := map[string]bool{}
-
-	err := fs.WalkDir(SmsVerifyPlugin{}.MigrationFS(), ".", func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if strings.HasSuffix(path, ".up.sql") {
-			ups[path] = true
-		}
-		if strings.HasSuffix(path, ".down.sql") {
-			downs[path] = true
-		}
-
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk migrations: %v", err)
+// TestMigrationsAreRegistered covers what the host's `db:migrate` needs: the
+// blank import above compiles the Go migrations in, and each one must carry
+// both directions so `db:rollback` has something to run. The versions match the
+// SQL migrations this module used to ship, so a host that already applied those
+// skips these rather than re-creating the tables.
+func TestMigrationsAreRegistered(t *testing.T) {
+	want := map[string]string{
+		"20260929153501": "create_sms_verifications",
+		"20260929153502": "create_captchas",
 	}
 
-	if len(ups) != 2 {
-		t.Fatalf("up migrations = %v, want 2", ups)
+	found := map[string]schema.Definition{}
+	for _, def := range schema.Definitions() {
+		found[def.Version] = def
 	}
-	for up := range ups {
-		if down := strings.TrimSuffix(up, ".up.sql") + ".down.sql"; !downs[down] {
-			t.Fatalf("%s has no matching down migration", up)
+
+	for version, name := range want {
+		def, ok := found[version]
+		if !ok {
+			t.Fatalf("migration %s is not registered", version)
+		}
+		if def.Name != name {
+			t.Fatalf("migration %s name = %q, want %q", version, def.Name, name)
+		}
+		if len(def.UpOps) == 0 || len(def.DownOps) == 0 {
+			t.Fatalf("migration %s has %d up ops and %d down ops, want both non-empty",
+				version, len(def.UpOps), len(def.DownOps))
 		}
 	}
 }

@@ -3,9 +3,6 @@
 package tencentcloudplugin
 
 import (
-	"embed"
-	"io/fs"
-
 	"github.com/daqing/airway/lib/plugin"
 	"github.com/gin-gonic/gin"
 
@@ -13,14 +10,12 @@ import (
 	"github.com/daqing/airway-tencentcloud-plugin/install/lib/api/sms_codes_api"
 	"github.com/daqing/airway-tencentcloud-plugin/install/lib/api/tencentcloud_api"
 	"github.com/daqing/airway-tencentcloud-plugin/install/lib/models"
-)
 
-// migrations holds the SQL migrations of this module. Both plugins expose the
-// same files: plugin:install resolves a plugin by its module (one name per
-// module), so only the provider it finds is ever read.
-//
-//go:embed install/host/db/migrate
-var migrations embed.FS
+	// The schema arrives as Go migrations: importing them registers the tables
+	// with lib/migrate, so the host's db:migrate creates them from the module
+	// zip without a file ever being copied into the host project.
+	_ "github.com/daqing/airway-tencentcloud-plugin/install/lib/migrations"
+)
 
 // Plugin is the tencentcloud feature module.
 type Plugin struct{}
@@ -34,10 +29,6 @@ func (Plugin) MountPath() string { return "/api/v1/tencentcloud" }
 func (Plugin) Routes(r *gin.RouterGroup) {
 	tencentcloud_api.Routes(r)
 }
-
-// MigrationFS ships the module's migrations from the binary instead of the
-// module zip.
-func (Plugin) MigrationFS() fs.FS { return migrations }
 
 // SmsVerifyPlugin is the phone verification module: it issues image captchas
 // and rate-limited login codes over SMS.
@@ -53,8 +44,6 @@ func (SmsVerifyPlugin) Routes(r *gin.RouterGroup) {
 	sms_codes_api.Routes(r)
 	captcha_api.Routes(r)
 }
-
-func (SmsVerifyPlugin) MigrationFS() fs.FS { return migrations }
 
 func (SmsVerifyPlugin) REPLModels() map[string]any { return models.REPLModels() }
 

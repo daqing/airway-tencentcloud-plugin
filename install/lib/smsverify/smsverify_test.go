@@ -259,22 +259,22 @@ func TestSendRequiresCaptchaPastHourlyQuota(t *testing.T) {
 	})
 }
 
-// issueCaptcha issues a captcha bound to ip and returns its id along with the
-// answer the image encodes, which is what the client would type back.
-func issueCaptcha(t *testing.T, ip string) (id, answer string) {
+// issueCaptcha issues a captcha bound to ip and returns its token along with
+// the answer the image encodes, which is what the client would type back.
+func issueCaptcha(t *testing.T, ip string) (token, answer string) {
 	t.Helper()
 
-	id, _, err := captcha.Issue(context.Background(), ip)
+	token, _, err := captcha.Issue(context.Background(), ip)
 	if err != nil {
 		t.Fatalf("captcha.Issue: %v", err)
 	}
 
-	row, err := repo.FindOneBy[models.Captcha](sql.H{"id": id})
+	row, err := repo.FindOneBy[models.Captcha](sql.H{"token": token})
 	if err != nil || row == nil {
 		t.Fatalf("captcha row = %#v, err = %v", row, err)
 	}
 
-	return id, row.Answer
+	return token, row.Answer
 }
 
 func TestSendRetiresThePreviousCode(t *testing.T) {

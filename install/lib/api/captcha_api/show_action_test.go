@@ -70,9 +70,9 @@ func TestShowActionIssuesACaptcha(t *testing.T) {
 		t.Fatalf("code = %d, message = %q", env.Code, env.Message)
 	}
 
-	id, _ := env.Data["id"].(string)
-	if len(id) != 16 {
-		t.Fatalf("id = %q, want 16 hex characters", id)
+	token, _ := env.Data["token"].(string)
+	if len(token) != 16 {
+		t.Fatalf("token = %q, want 16 hex characters", token)
 	}
 
 	image, _ := env.Data["image"].(string)
@@ -89,9 +89,13 @@ func TestShowActionIssuesACaptcha(t *testing.T) {
 		t.Fatalf("image = % x, want a PNG header", png[:8])
 	}
 
-	row, err := repo.FindOneBy[models.Captcha](sql.H{"id": id})
+	row, err := repo.FindOneBy[models.Captcha](sql.H{"token": token})
 	if err != nil || row == nil {
 		t.Fatalf("captcha row = %#v, err = %v", row, err)
+	}
+	// The token the client sees is not the row's own key.
+	if row.ID == 0 {
+		t.Fatal("row.ID = 0, want the generated primary key")
 	}
 	if row.IP != testIP {
 		t.Fatalf("row.IP = %q, want %q", row.IP, testIP)

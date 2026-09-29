@@ -236,9 +236,10 @@ host's database, so PostgreSQL, MySQL and SQLite all work. Until that runs,
 both endpoints answer `10000` with the database's own table-not-found error.
 
 > The migrations create the tables, they do not adopt existing ones. A host
-> that already has them — from its own migrations, say — must record the
-> versions this module uses before `db:migrate`, or that run fails on the
-> existing tables:
+> that already has them — from its own migrations, say — either drops them and
+> lets `db:migrate` recreate them, or, if its tables already match the schema
+> this module defines, records the versions so the run skips them instead of
+> failing on the existing tables:
 >
 > ```sql
 > INSERT INTO schema_migrations (version, applied_at)
@@ -258,7 +259,7 @@ curl -X POST http://127.0.0.1:3000/api/v1/sms_codes \
 | Field | Required | Description |
 | --- | --- | --- |
 | `phone` | yes | Mainland China mobile number: `1[3-9]` followed by nine digits, no country code |
-| `captcha_id` | once a captcha is required | The `id` from [Get a captcha](#get-a-captcha) |
+| `captcha_token` | once a captcha is required | The `token` from [Get a captcha](#get-a-captcha) |
 | `captcha_answer` | once a captcha is required | The four digits the image shows |
 
 ```json
@@ -287,13 +288,14 @@ Every response is HTTP 200 — the outcome is in `code`:
 `GET /api/v1/captcha`
 
 Returns a four-digit captcha bound to the caller's IP, rendered as a base64
-PNG so the client needs no second request:
+PNG so the client needs no second request. `token` is what the send endpoint
+wants back as `captcha_token`:
 
 ```json
 {
   "code": 0,
   "data": {
-    "id": "16923e222c57be8d",
+    "token": "16923e222c57be8d",
     "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJYAAAA0CAIAAADnt1ZQ..."
   },
   "message": ""
@@ -343,9 +345,9 @@ import (
 	"github.com/daqing/airway-tencentcloud-plugin/install/lib/smsverify"
 )
 
-result, err := smsverify.Send(ctx, "18501234444", clientIP, captchaID, captchaAnswer)
+result, err := smsverify.Send(ctx, "18501234444", clientIP, captchaToken, captchaAnswer)
 if errors.Is(err, smsverify.ErrCaptchaRequired) {
-	// serve a captcha, then ask again with captcha_id and captcha_answer
+	// serve a captcha, then ask again with captcha_token and captcha_answer
 }
 if errors.Is(err, smsverify.ErrRateLimited) {
 	// cooldown or a daily cap; tell the user to wait
@@ -357,9 +359,9 @@ if err := smsverify.Verify(ctx, "18501234444", code); err != nil {
 }
 
 // what the captcha endpoint wraps, for a host rendering its own page:
-// the id goes back to the client, png is the image to serve.
-id, png, err := captcha.Issue(ctx, clientIP) // ErrRateLimited past 30/hour
-ok := captcha.Verify(ctx, clientIP, id, answer)
+// the token goes back to the client, png is the image to serve.
+token, png, err := captcha.Issue(ctx, clientIP) // ErrRateLimited past 30/hour
+ok := captcha.Verify(ctx, clientIP, token, answer)
 ```
 
 `Verify` consumes the code, so it returns nil at most once per code. It

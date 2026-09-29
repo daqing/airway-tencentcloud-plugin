@@ -28,20 +28,20 @@ func setupDB(t *testing.T) {
 
 // issue returns a new captcha along with the answer it stored, which is what
 // the client would read off the image.
-func issue(t *testing.T, ip string) (id, answer string, png []byte) {
+func issue(t *testing.T, ip string) (token, answer string, png []byte) {
 	t.Helper()
 
-	id, png, err := Issue(context.Background(), ip)
+	token, png, err := Issue(context.Background(), ip)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
 
-	row, err := repo.FindOneBy[models.Captcha](sql.H{"id": id})
+	row, err := repo.FindOneBy[models.Captcha](sql.H{"token": token})
 	if err != nil || row == nil {
 		t.Fatalf("captcha row = %#v, err = %v", row, err)
 	}
 
-	return id, row.Answer, png
+	return token, row.Answer, png
 }
 
 // wrongAnswer changes the leading digit so it cannot equal answer.
@@ -57,11 +57,11 @@ func wrongAnswer(answer string) string {
 func TestIssueStoresAnswerAndImage(t *testing.T) {
 	setupDB(t)
 
-	id, answer, png := issue(t, "10.0.0.1")
+	token, answer, png := issue(t, "10.0.0.1")
 
 	// utils.RandomHex(16) renders 8 random bytes, i.e. 16 hex characters.
-	if len(id) != 16 || strings.Trim(id, "0123456789abcdef") != "" {
-		t.Fatalf("id = %q, want 16 hex characters", id)
+	if len(token) != 16 || strings.Trim(token, "0123456789abcdef") != "" {
+		t.Fatalf("token = %q, want 16 hex characters", token)
 	}
 	if len(answer) != AnswerLength || strings.Trim(answer, "0123456789") != "" {
 		t.Fatalf("answer = %q, want %d digits", answer, AnswerLength)
@@ -119,12 +119,12 @@ func TestIssueForgetsCaptchasOlderThanAnHour(t *testing.T) {
 func TestVerifyAcceptsOnce(t *testing.T) {
 	setupDB(t)
 
-	id, answer, _ := issue(t, "10.0.0.1")
+	token, answer, _ := issue(t, "10.0.0.1")
 
-	if !Verify(context.Background(), "10.0.0.1", id, answer) {
+	if !Verify(context.Background(), "10.0.0.1", token, answer) {
 		t.Fatal("Verify rejected a correct answer")
 	}
-	if Verify(context.Background(), "10.0.0.1", id, answer) {
+	if Verify(context.Background(), "10.0.0.1", token, answer) {
 		t.Fatal("Verify accepted an already consumed captcha")
 	}
 }
@@ -132,39 +132,39 @@ func TestVerifyAcceptsOnce(t *testing.T) {
 func TestVerifyRejects(t *testing.T) {
 	tests := []struct {
 		name    string
-		prepare func(t *testing.T, id, answer string) (ip, verifyID, verifyAnswer string)
+		prepare func(t *testing.T, token, answer string) (ip, verifyToken, verifyAnswer string)
 	}{
 		{
 			name: "wrong answer",
-			prepare: func(_ *testing.T, id, answer string) (string, string, string) {
-				return "10.0.0.1", id, wrongAnswer(answer)
+			prepare: func(_ *testing.T, token, answer string) (string, string, string) {
+				return "10.0.0.1", token, wrongAnswer(answer)
 			},
 		},
 		{
 			name: "issued to another ip",
-			prepare: func(_ *testing.T, id, answer string) (string, string, string) {
-				return "10.0.0.2", id, answer
+			prepare: func(_ *testing.T, token, answer string) (string, string, string) {
+				return "10.0.0.2", token, answer
 			},
 		},
 		{
-			name: "unknown id",
+			name: "unknown token",
 			prepare: func(_ *testing.T, _, answer string) (string, string, string) {
 				return "10.0.0.1", "00000000000000000000000000000000", answer
 			},
 		},
 		{
 			name: "expired",
-			prepare: func(t *testing.T, id, answer string) (string, string, string) {
+			prepare: func(t *testing.T, token, answer string) (string, string, string) {
 				t.Helper()
 
 				if err := repo.UpdateWhere[models.Captcha](
 					sql.H{"expires_at": time.Now().Add(-time.Minute)},
-					sql.Eq("id", id),
+					sql.Eq("token", token),
 				); err != nil {
 					t.Fatalf("expire captcha: %v", err)
 				}
 
-				return "10.0.0.1", id, answer
+				return "10.0.0.1", token, answer
 			},
 		},
 	}
@@ -173,11 +173,11 @@ func TestVerifyRejects(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			setupDB(t)
 
-			id, answer, _ := issue(t, "10.0.0.1")
-			ip, verifyID, verifyAnswer := test.prepare(t, id, answer)
+			token, answer, _ := issue(t, "10.0.0.1")
+			ip, verifyToken, verifyAnswer := test.prepare(t, token, answer)
 
-			if Verify(context.Background(), ip, verifyID, verifyAnswer) {
-				t.Fatalf("Verify(%q, %q, %q) = true, want false", ip, verifyID, verifyAnswer)
+			if Verify(context.Background(), ip, verifyToken, verifyAnswer) {
+				t.Fatalf("Verify(%q, %q, %q) = true, want false", ip, verifyToken, verifyAnswer)
 			}
 		})
 	}

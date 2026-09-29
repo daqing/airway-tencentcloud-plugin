@@ -90,21 +90,21 @@ func seedCodes(t *testing.T, ip string, n int, age time.Duration) {
 	}
 }
 
-// issueCaptcha returns a captcha id bound to ip along with its answer.
-func issueCaptcha(t *testing.T, ip string) (id, answer string) {
+// issueCaptcha returns a captcha token bound to ip along with its answer.
+func issueCaptcha(t *testing.T, ip string) (token, answer string) {
 	t.Helper()
 
-	id, _, err := captcha.Issue(context.Background(), ip)
+	token, _, err := captcha.Issue(context.Background(), ip)
 	if err != nil {
 		t.Fatalf("captcha.Issue: %v", err)
 	}
 
-	row, err := repo.FindOneBy[models.Captcha](sql.H{"id": id})
+	row, err := repo.FindOneBy[models.Captcha](sql.H{"token": token})
 	if err != nil || row == nil {
 		t.Fatalf("captcha row = %#v, err = %v", row, err)
 	}
 
-	return id, row.Answer
+	return token, row.Answer
 }
 
 func TestSendActionRejectsBadInput(t *testing.T) {
@@ -217,11 +217,11 @@ func TestSendActionAcceptsACaptcha(t *testing.T) {
 	r := setupRouter(t)
 	seedCodes(t, testIP, smsverify.CaptchaThresholdPerHour, time.Minute)
 
-	id, _ := issueCaptcha(t, testIP)
+	token, _ := issueCaptcha(t, testIP)
 
 	t.Run("wrong answer", func(t *testing.T) {
 		env := postSend(t, r, testIP,
-			fmt.Sprintf(`{"phone":"13900139000","captcha_id":%q,"captcha_answer":"99999"}`, id))
+			fmt.Sprintf(`{"phone":"13900139000","captcha_token":%q,"captcha_answer":"99999"}`, token))
 
 		if env.Code != codeBadRequest || !strings.Contains(env.Message, "invalid captcha") {
 			t.Fatalf("body = %+v, want an invalid captcha error", env)
@@ -230,10 +230,10 @@ func TestSendActionAcceptsACaptcha(t *testing.T) {
 
 	t.Run("right answer", func(t *testing.T) {
 		// The wrong answer above burned that captcha, so issue another.
-		id, answer := issueCaptcha(t, testIP)
+		token, answer := issueCaptcha(t, testIP)
 
 		env := postSend(t, r, testIP,
-			fmt.Sprintf(`{"phone":"13900139000","captcha_id":%q,"captcha_answer":%q}`, id, answer))
+			fmt.Sprintf(`{"phone":"13900139000","captcha_token":%q,"captcha_answer":%q}`, token, answer))
 
 		if env.Code != 0 || env.Data["sent"] != true {
 			t.Fatalf("body = %+v, want a successful send", env)

@@ -28,7 +28,7 @@ const captchaURL = "/api/v1/captcha"
 // openapi.go request-body schema.
 type SendParams struct {
 	Phone         string `json:"phone"`
-	CaptchaID     string `json:"captcha_id,omitempty"`
+	CaptchaToken  string `json:"captcha_token,omitempty"`
 	CaptchaAnswer string `json:"captcha_answer,omitempty"`
 }
 
@@ -47,7 +47,7 @@ func SendAction(c *gin.Context) {
 		c.Request.Context(),
 		strings.TrimSpace(params.Phone),
 		c.ClientIP(),
-		strings.TrimSpace(params.CaptchaID),
+		strings.TrimSpace(params.CaptchaToken),
 		strings.TrimSpace(params.CaptchaAnswer),
 	)
 	if err != nil {

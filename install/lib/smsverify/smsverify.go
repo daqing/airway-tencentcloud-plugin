@@ -90,7 +90,7 @@ type Result struct {
 
 // Send validates the phone, enforces the rate limits, generates a code and
 // delivers it. It returns the code so a mock-mode API can expose it locally.
-func Send(ctx context.Context, phone, ip, captchaID, captchaAnswer string) (Result, error) {
+func Send(ctx context.Context, phone, ip, captchaToken, captchaAnswer string) (Result, error) {
 	driver, err := driver()
 	if err != nil {
 		return Result{}, err
@@ -113,10 +113,10 @@ func Send(ctx context.Context, phone, ip, captchaID, captchaAnswer string) (Resu
 		return Result{}, err
 	}
 	if needed {
-		if captchaID == "" {
+		if captchaToken == "" {
 			return Result{}, ErrCaptchaRequired
 		}
-		if !captcha.Verify(ctx, ip, captchaID, captchaAnswer) {
+		if !captcha.Verify(ctx, ip, captchaToken, captchaAnswer) {
 			return Result{}, ErrCaptchaInvalid
 		}
 	}

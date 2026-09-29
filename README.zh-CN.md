@@ -220,7 +220,8 @@ status):
 在这之前两个端点都返回 `10000`,并带上数据库自己的「表不存在」错误。
 
 > 迁移只负责建表,不会接管已存在的表。宿主若已经通过自己的迁移建好了这两张
-> 表,得先把这个模块用的版本号记进去,否则 `db:migrate` 会因为表已存在而失败:
+> 表,要么先删掉它们让 `db:migrate` 重建,要么在表结构已经与本模块定义一致时
+> 把这个模块用的版本号记进去,避免 `db:migrate` 因为表已存在而失败:
 >
 > ```sql
 > INSERT INTO schema_migrations (version, applied_at)
@@ -240,7 +241,7 @@ curl -X POST http://127.0.0.1:3000/api/v1/sms_codes \
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `phone` | 是 | 中国大陆手机号:`1[3-9]` 开头共 11 位,不带国家码 |
-| `captcha_id` | 需要验证码时必填 | [获取验证码](#获取验证码)返回的 `id` |
+| `captcha_token` | 需要验证码时必填 | [获取验证码](#获取验证码)返回的 `token` |
 | `captcha_answer` | 需要验证码时必填 | 图片上的四位数字 |
 
 ```json
@@ -268,13 +269,13 @@ mock 驱动下验证码也会一并返回,便于本地联调而不必开通短�
 `GET /api/v1/captcha`
 
 返回一个绑定调用方 IP 的四位图形验证码,以 base64 PNG 形式给出,客户端无需
-再发一次请求:
+再发一次请求。`token` 就是发码端点要的 `captcha_token`:
 
 ```json
 {
   "code": 0,
   "data": {
-    "id": "16923e222c57be8d",
+    "token": "16923e222c57be8d",
     "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJYAAAA0CAIAAADnt1ZQ..."
   },
   "message": ""
@@ -321,9 +322,9 @@ import (
 	"github.com/daqing/airway-tencentcloud-plugin/install/lib/smsverify"
 )
 
-result, err := smsverify.Send(ctx, "18501234444", clientIP, captchaID, captchaAnswer)
+result, err := smsverify.Send(ctx, "18501234444", clientIP, captchaToken, captchaAnswer)
 if errors.Is(err, smsverify.ErrCaptchaRequired) {
-	// 下发一张验证码,再带 captcha_id 与 captcha_answer 重试
+	// 下发一张验证码,再带 captcha_token 与 captcha_answer 重试
 }
 if errors.Is(err, smsverify.ErrRateLimited) {
 	// 冷却期未过或触达日上限,提示用户稍后再试
@@ -335,9 +336,9 @@ if err := smsverify.Verify(ctx, "18501234444", code); err != nil {
 }
 
 // 验证码端点包的就是这两个,宿主自己画页面时可以直接用:
-// id 交给客户端,png 是直接可返回的图片。
-id, png, err := captcha.Issue(ctx, clientIP) // 超过每小时 30 张返回 ErrRateLimited
-ok := captcha.Verify(ctx, clientIP, id, answer)
+// token 交给客户端,png 是直接可返回的图片。
+token, png, err := captcha.Issue(ctx, clientIP) // 超过每小时 30 张返回 ErrRateLimited
+ok := captcha.Verify(ctx, clientIP, token, answer)
 ```
 
 `Verify` 会消费验证码,所以同一个验证码最多只会返回一次 nil。「验证码错误」和

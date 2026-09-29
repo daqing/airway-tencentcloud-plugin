@@ -94,8 +94,10 @@ go run . plugin:install github.com/daqing/airway-tencentcloud-plugin
   already applied them skips these rather than re-creating the tables; and the
   down migrations are derived by reversing the up ops, so anything that cannot
   be reversed needs `m.Reversible` or an explicit `schema.Register`. The DSL's
-  only primary key builder is `Table.ID()`, which is autoincrement, so
-  `captchas` keys on a unique `id VARCHAR(32)` column instead of a primary key.
+  only primary key builder is `Table.ID()`, which is autoincrement, so a table
+  whose public identifier is a random string keeps them apart: `captchas` has
+  an `ID()` key of its own and a unique `token VARCHAR(32)` column, and only the
+  token is ever handed to a client.
 - Nested-module gotcha: any `go.mod` under `install/deps/` must be shipped as
   `go.mod.templ` (installed as `go.mod`) — Go module zips drop nested modules.
   A real `go.mod` may sit beside its `.templ` for local builds; `plugin:install`

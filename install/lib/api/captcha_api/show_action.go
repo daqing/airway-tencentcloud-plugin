@@ -17,7 +17,7 @@ const codeRateLimited = 42901
 // ShowAction issues a captcha bound to the requesting IP and returns it as a
 // base64 data URL, so the client needs no second request to display it.
 func ShowAction(c *gin.Context) {
-	id, png, err := captcha.Issue(c.Request.Context(), c.ClientIP())
+	token, png, err := captcha.Issue(c.Request.Context(), c.ClientIP())
 	if err != nil {
 		if errors.Is(err, captcha.ErrRateLimited) {
 			render.ErrorCodeMsg(c, codeRateLimited, err.Error())
@@ -29,7 +29,7 @@ func ShowAction(c *gin.Context) {
 	}
 
 	render.OK(c, gin.H{
-		"id":    id,
+		"token": token,
 		"image": "data:image/png;base64," + base64.StdEncoding.EncodeToString(png),
 	})
 }

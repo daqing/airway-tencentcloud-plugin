@@ -39,9 +39,10 @@ const (
 // ErrRateLimited reports that the caller has requested too many captchas.
 var ErrRateLimited = errors.New("too many captchas, please try again later")
 
-// Issue creates a captcha for the given IP and returns its id and PNG image.
-// It reports ErrRateLimited instead of issuing once the IP is over
-// MaxPerIPPerHour, and does so before writing anything or rendering.
+// Issue creates a captcha for the given IP and returns the token identifying
+// it, along with its PNG image. It reports ErrRateLimited instead of issuing
+// once the IP is over MaxPerIPPerHour, and does so before writing anything or
+// rendering.
 func Issue(ctx context.Context, ip string) (string, []byte, error) {
 	limited, err := rateLimited(ip)
 	if err != nil {
@@ -56,10 +57,10 @@ func Issue(ctx context.Context, ip string) (string, []byte, error) {
 		return "", nil, err
 	}
 
-	id := utils.RandomHex(16)
+	token := utils.RandomHex(16)
 	now := time.Now()
 	if _, err := repo.CreateFrom[models.Captcha](sql.H{
-		"id":         id,
+		"token":      token,
 		"answer":     answer,
 		"ip":         ip,
 		"expires_at": now.Add(TTL),
@@ -74,7 +75,7 @@ func Issue(ctx context.Context, ip string) (string, []byte, error) {
 		return "", nil, err
 	}
 
-	return id, pngBytes, nil
+	return token, pngBytes, nil
 }
 
 // rateLimited reports whether ip has asked for MaxPerIPPerHour captchas or
@@ -95,13 +96,14 @@ func rateLimited(ip string) (bool, error) {
 }
 
 // Verify consumes a captcha and reports whether it was valid: same IP, not
-// consumed, not expired, and the answer matches. The first Verify call wins —
-// it consumes the captcha whatever the answer, so a wrong guess burns it too.
+// consumed, not expired, and the answer matches. token is what Issue returned.
+// The first Verify call wins — it consumes the captcha whatever the answer, so
+// a wrong guess burns it too.
 //
 // Consumption is a conditional UPDATE rather than a read-then-write, so two
 // concurrent callers cannot both consume the same captcha.
-func Verify(ctx context.Context, ip, id, answer string) bool {
-	c, err := repo.FindOneBy[models.Captcha](sql.H{"id": id})
+func Verify(ctx context.Context, ip, token, answer string) bool {
+	c, err := repo.FindOneBy[models.Captcha](sql.H{"token": token})
 	if err != nil || c == nil {
 		return false
 	}
@@ -109,7 +111,7 @@ func Verify(ctx context.Context, ip, id, answer string) bool {
 	now := time.Now()
 	consumed, err := repo.UpdateAffected(repo.CurrentDB(),
 		sql.UpdateAll(models.Captcha{}, sql.H{"consumed": true, "updated_at": now}).
-			Where(sql.AllOf(sql.Eq("id", id), sql.Eq("consumed", false))))
+			Where(sql.AllOf(sql.Eq("token", token), sql.Eq("consumed", false))))
 	if err != nil || consumed == 0 {
 		// Already consumed, or another caller got there first.
 		return false

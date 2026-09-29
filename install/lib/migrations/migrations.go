@@ -33,11 +33,12 @@ func init() {
 
 	schema.RegisterChange("20260929153502", "create_captchas", func(m *schema.Migrator) {
 		m.CreateTable("captchas", func(t *schema.Table) {
-			// A unique column rather than a primary key: the id is the random
-			// token captcha.Issue returns to the client, and the DSL's only
-			// primary key builder, Table.ID(), is autoincrement-only. Uniqueness
-			// and NOT NULL are what this table needs from a key.
-			t.String("id", 32).Null(false).Unique()
+			// The id is an ordinary autoincrement key, and `token` is the random
+			// string captcha.Issue hands the client. Keeping them apart means the
+			// client-facing identifier is never the row number, which is
+			// enumerable, and the table gets a declared primary key.
+			t.ID()
+			t.String("token", 32).Null(false).Unique()
 			t.String("answer", 8).Null(false)
 			t.String("ip", 45).Null(false)
 			t.DateTime("expires_at").Null(false)

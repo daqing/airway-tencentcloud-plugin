@@ -9,8 +9,7 @@
 // Storage is an in-memory SQLite database — this stands in for the host's
 // migrations, which a real host runs itself. Set DB_DSN to serve from a real
 // PostgreSQL or MySQL instead, which also applies the module's migrations to it.
-// The tencentcloud debug endpoints need no configuration; the real /sms/send and
-// the smsverify endpoints read the TENCENTCLOUD_* / SMS_DRIVER environment
+// The smsverify endpoints read the TENCENTCLOUD_* / SMS_DRIVER environment
 // variables on use.
 package main
 
@@ -22,7 +21,6 @@ import (
 
 	"github.com/daqing/airway-tencentcloud-plugin"
 	"github.com/daqing/airway-tencentcloud-plugin/install/ignore/testdb"
-	"github.com/daqing/airway-tencentcloud-plugin/install/lib/api/tencentcloud_api"
 )
 
 func main() {
@@ -36,7 +34,6 @@ func main() {
 	}
 
 	r := gin.Default()
-	tencentcloud_api.DebugRoutes(r.Group("/api/v1/tencentcloud"))
 	tencentcloudplugin.SmsVerifyPlugin{}.Routes(r.Group("/api/v1"))
 
 	if err := r.Run(addr); err != nil {

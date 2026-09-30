@@ -15,9 +15,10 @@ There is no file channel for the schema: the tables `smsverify` uses are Go
 migrations compiled in (see Migrations).
 
 - `plugin.go` — both plugin entry points.
-  - `Plugin` — `Name()` `tencentcloud`, `MountPath()` `/api/v1/tencentcloud`,
-    delegates to `install/lib/api/tencentcloud_api.Routes`, which mounts
-    nothing outside local mode (see Conventions).
+  - `Plugin` — `Name()` `tencentcloud`, `MountPath()` `/api/v1/tencentcloud`.
+    `Routes` is empty on purpose: it exposes no HTTP surface at all (see
+    Conventions). Only `Name()` matters to the framework here — registration is
+    what makes `plugin:install` resolve the module.
   - `SmsVerifyPlugin` — `Name()` `smsverify`, `MountPath()` `/api/v1`. Mounts
     `sms_codes_api` and `captcha_api` **unconditionally**: those endpoints
     exist for clients to call, and rate limits rather than an auth gate are
@@ -70,15 +71,13 @@ go run . plugin:install github.com/daqing/airway-tencentcloud-plugin
   mounted at the plugin's `MountPath()`.
 - HTTP surface: the host mounts plugins into its public router with no
   middleware hook, so a plugin decides for itself what is safe to expose.
-  `tencentcloud` answers that by registering nothing outside local mode
-  (`AIRWAY_ENV=local`, via `utils.AppConfig().IsLocal`); endpoints that only
-  suit local debugging go in its exported `DebugRoutes`, which callers mount
-  themselves (the devserver does), and their `openapi.Post` declarations sit
-  next to the registration behind a `sync.Once`: `openapi.Post` panics on a
-  duplicate, and declaring a route that is never mounted warns on every host's
-  `airway openapi:generate`. `smsverify` answers it by mounting always — its
-  routes are unconditionally reached, so their declarations live in plain
-  `init()` and need no guard.
+  `tencentcloud` answers that by exposing nothing: hosts call
+  `tencentcloud.SendSms` in-process, so its `Routes` registers no route in any
+  environment. It used to mount an SMS send and a mock send endpoint in local
+  mode only; `smsverify` made both redundant — it serves the client-facing send
+  with rate limits and captchas, and hands the code back as `dev_code` under
+  the mock driver. `smsverify` is therefore the module's whole HTTP surface and
+  mounts always, so its `openapi.Post` declarations live in plain `init()`.
 - Responses use the framework envelope (`{code, data, message}`, always HTTP
   200) via `github.com/daqing/airway/lib/render`. Where a body-level error
   code has to carry a `data` payload, `sms_codes_api` wraps `c.JSON` in a
@@ -133,10 +132,10 @@ go run . plugin:install github.com/daqing/airway-tencentcloud-plugin
   and no Docker, and no schema to keep in step by hand. Point the dev server at
   a real server with `DB_DSN` when a change has to be checked on another
   dialect. External boundaries are stubbed,
-  never hit for real: `tencentcloud.sendSmsCall` (in-package) and
-  `tencentcloud_api.sendSms` replace the call chain, `resetForTest` re-arms
-  the lazy `sync.Once` setup between configurations, and `smsverify.deliverSMS`
-  stands in for the SDK in delivery tests.
+  never hit for real: `tencentcloud.sendSmsCall` (in-package) replaces the call
+  chain, `resetForTest` re-arms the lazy `sync.Once` setup between
+  configurations, and `smsverify.deliverSMS` stands in for the SDK in delivery
+  tests.
 
 Before changing install/mount behavior, read the plugin guide:
 https://github.com/daqing/airway/blob/main/docs/plugin.md

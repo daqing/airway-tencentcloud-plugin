@@ -23,14 +23,9 @@ server:
 go run ./install/ignore/devserver   # listens on 127.0.0.1:3000, override with LISTEN
 ```
 
-```bash
-curl -X POST http://127.0.0.1:3000/api/v1/tencentcloud/sms/send/mock \
-  -H 'Content-Type: application/json' \
-  -d '{"phone_numbers":["+8618501234444"],"template_id":"1234567"}'
-```
-
-The dev server registers every endpoint unconditionally and serves them from
-an in-memory SQLite database, so the phone verification flow works end to end:
+The dev server registers the `smsverify` endpoints unconditionally and serves
+them from an in-memory SQLite database, so the phone verification flow works
+end to end:
 
 ```bash
 curl -s localhost:3000/api/v1/captcha
@@ -39,9 +34,9 @@ curl -sX POST localhost:3000/api/v1/sms_codes \
 ```
 
 Start it with `AIRWAY_ENV=local` to get the mock SMS driver, which hands the
-code back as `dev_code` instead of sending it. The mock tencentcloud endpoint
-needs no configuration either; the real `/sms/send` reads the `TENCENTCLOUD_*`
-environment variables (see Configuration) on first use.
+code back as `dev_code` instead of sending it. Under `SMS_DRIVER=tencent` the
+driver reads the `TENCENTCLOUD_*` environment variables (see Configuration) on
+first use.
 
 Point `DB_DSN` at a PostgreSQL or MySQL server to serve from that instead; the
 dev server applies the module's migrations to it, which is a quick way to
@@ -65,11 +60,13 @@ import (
 )
 ```
 
-The module holds two plugins and this one import registers both:
-`tencentcloud` (the debug endpoints, local mode only) and `smsverify` (the
-public phone verification endpoints). `plugin:install` resolves a plugin from
-the module path, so it always names the install `tencentcloud`; the tables
-both plugins use are compiled in rather than installed (see
+The module holds two plugins and this one import registers both: `smsverify`,
+which serves the phone verification endpoints, and `tencentcloud`, which
+serves no HTTP routes at all — hosts call its Go API in-process, and the
+plugin exists so `plugin:install` resolves the module and so the schema
+compiled in beside it reaches the host binary. `plugin:install` names the
+install after the plugin it finds, so it always uses `tencentcloud`; the
+tables both plugins use are compiled in rather than installed (see
 [Install layout](#install-layout)).
 
 The import is also how the host gets the plugins' Go API — the code is
@@ -117,104 +114,6 @@ The plugin reads its configuration from environment variables on first use
 Missing variables are reported on the first API call, not at boot, so hosts
 that haven't configured the plugin yet still start normally.
 
-## HTTP endpoints (local development only)
-
-`Routes` mounts the two endpoints below at `/api/v1/tencentcloud` **only when
-the host runs in local mode** (`AIRWAY_ENV=local`). A production host serves
-neither of them and calls the Go API instead. Neither endpoint authenticates
-its caller: `/sms/send` spends real SMS quota for whoever can reach it, and
-`/sms/send/mock` returns the verification code in the response body.
-
-To serve them outside local mode, mount them yourself behind your own
-authentication — never on a public router:
-
-```go
-tencentcloud_api.DebugRoutes(r.Group("/api/v1/tencentcloud", requireInternalAuth))
-```
-
-Because the routes follow the mode, `airway openapi:generate` documents them
-only when it runs with `AIRWAY_ENV=local`; the generated document always
-matches what that binary actually serves.
-
-### Send SMS
-
-`POST /api/v1/tencentcloud/sms/send`
-
-```bash
-curl -X POST http://127.0.0.1:3000/api/v1/tencentcloud/sms/send \
-  -H 'Content-Type: application/json' \
-  -d '{
-        "phone_numbers": ["+8618501234444"],
-        "template_id": "1234567",
-        "template_param_set": ["654321"]
-      }'
-```
-
-| Field | Required | Description |
-| --- | --- | --- |
-| `phone_numbers` | yes | E.164 numbers (`+8618501234444`); a bare 11-digit domestic number also works. At most 200 per request, all domestic or all international |
-| `template_id` | yes | An approved template ID |
-| `template_param_set` | no | Template variables, in the order the template defines them |
-| `sign_name` | no | Overrides `TENCENTCLOUD_SMS_SIGN_NAME` for this request |
-| `session_context` | no | User context echoed back in the status (max 512 bytes) |
-
-Response (a zero `code` only means Tencent Cloud accepted the request; check
-each number's status):
-
-```json
-{
-  "code": 0,
-  "data": {
-    "request_id": "a0d44e6f-606b-4572-89f3-209ea1a6cf5a",
-    "send_status_set": [
-      {
-        "serial_no": "5000:10933456789012345678901234567",
-        "phone_number": "+8618501234444",
-        "fee": 1,
-        "code": "Ok",
-        "message": "send success"
-      }
-    ]
-  },
-  "message": ""
-}
-```
-
-### Mock send (local debugging)
-
-`POST /api/v1/tencentcloud/sms/send/mock`
-
-Accepts the same request fields, applies the same validation, and renders
-the exact same response as [Send SMS](#send-sms) — same fields, same
-types, nothing added or removed — so a client can switch between the two
-endpoints without any code changes. The only difference: nothing reaches
-Tencent Cloud (no credentials or SMS configuration needed), and the
-generated verification code comes back as the value of `request_id` and
-each status's `serial_no` (a six-digit string, leading zeros preserved).
-
-> This endpoint hands a verification code to anyone who calls it, which is
-> why it is registered only in local mode. Never mount it anywhere else.
-
-```json
-{
-  "code": 0,
-  "data": {
-    "request_id": "654321",
-    "send_status_set": [
-      {
-        "serial_no": "654321",
-        "phone_number": "+8618501234444",
-        "fee": 1,
-        "session_context": "order-42",
-        "code": "Ok",
-        "message": "mock send success"
-      }
-    ]
-  },
-  "message": ""
-}
-```
-
 ## Phone verification (`smsverify`)
 
 The module's second plugin implements what a login or sign-up screen needs: it
@@ -222,12 +121,12 @@ issues a verification code over SMS, caps how often a phone number and an IP
 may ask for one, demands an image captcha once an IP gets greedy, and checks
 the code back.
 
-Unlike the tencentcloud debug routes, **these two endpoints are mounted in
-every environment** — `AIRWAY_ENV` does not change them. Clients call them
-directly, and the rate limits below, not authentication, are what protects
-them. The plugin mounts at `/api/v1`, claiming that shared prefix: a host or
-another plugin that registers `/api/v1/sms_codes` or `/api/v1/captcha` will
-collide with it at boot.
+**These two endpoints are mounted in every environment** — `AIRWAY_ENV` does
+not change them, and they are the module's only HTTP surface. Clients call
+them directly, and the rate limits below, not authentication, are what
+protects them. The plugin mounts at `/api/v1`, claiming that shared prefix: a
+host or another plugin that registers `/api/v1/sms_codes` or `/api/v1/captcha`
+will collide with it at boot.
 
 Both tables it needs (`sms_verifications`, `captchas`) are Go migrations
 compiled into the module, so the host's usual `go run . db:migrate` creates

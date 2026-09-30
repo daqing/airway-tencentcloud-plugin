@@ -27,44 +27,23 @@ func TestPluginContract(t *testing.T) {
 	}
 }
 
-// TestPluginRoutesOnlyInLocalMode pins the plugin's HTTP attack surface: the
-// SMS endpoints spend real quota and hand out verification codes without
-// authenticating anyone, so they exist only when the host runs in local mode.
-func TestPluginRoutesOnlyInLocalMode(t *testing.T) {
-	tests := []struct {
-		name string
-		env  string
-		want []string
-	}{
-		{name: "unset", env: "", want: nil},
-		{name: "production", env: "production", want: nil},
-		{
-			name: "local",
-			env:  "local",
-			want: []string{
-				"POST /api/v1/tencentcloud/sms/send",
-				"POST /api/v1/tencentcloud/sms/send/mock",
-			},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("AIRWAY_ENV", test.env)
+// TestPluginMountsNoRoutes pins the plugin's HTTP attack surface at zero. The
+// SMS endpoints it used to expose spent real quota and handed out verification
+// codes without authenticating anyone; hosts call the Go API
+// (tencentcloud.SendSms) in-process instead, and the endpoints clients reach
+// belong to the smsverify plugin.
+func TestPluginMountsNoRoutes(t *testing.T) {
+	for _, env := range []string{"", "production", "local"} {
+		t.Run("env="+env, func(t *testing.T) {
+			t.Setenv("AIRWAY_ENV", env)
 
 			gin.SetMode(gin.TestMode)
 			r := gin.New()
 
 			Plugin{}.Routes(r.Group(Plugin{}.MountPath()))
 
-			var got []string
-			for _, route := range r.Routes() {
-				got = append(got, route.Method+" "+route.Path)
-			}
-			slices.Sort(got)
-
-			if !slices.Equal(got, test.want) {
-				t.Fatalf("routes = %v, want %v", got, test.want)
+			if got := r.Routes(); len(got) != 0 {
+				t.Fatalf("routes = %v, want none", got)
 			}
 		})
 	}

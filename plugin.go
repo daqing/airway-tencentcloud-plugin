@@ -8,7 +8,6 @@ import (
 
 	"github.com/daqing/airway-tencentcloud-plugin/install/lib/api/captcha_api"
 	"github.com/daqing/airway-tencentcloud-plugin/install/lib/api/sms_codes_api"
-	"github.com/daqing/airway-tencentcloud-plugin/install/lib/api/tencentcloud_api"
 	"github.com/daqing/airway-tencentcloud-plugin/install/lib/models"
 
 	// The schema arrives as Go migrations: importing them registers the tables
@@ -17,18 +16,20 @@ import (
 	_ "github.com/daqing/airway-tencentcloud-plugin/install/lib/migrations"
 )
 
-// Plugin is the tencentcloud feature module.
+// Plugin is the tencentcloud feature module. Hosts use its Go API rather than
+// its (nonexistent) HTTP routes.
 type Plugin struct{}
 
 func (Plugin) Name() string      { return "tencentcloud" }
 func (Plugin) MountPath() string { return "/api/v1/tencentcloud" }
 
-// Routes mounts the plugin's HTTP routes. The SMS endpoints are local-debug
-// only, so a host mounting this plugin gets none of them outside local mode;
-// see tencentcloud_api.Routes.
-func (Plugin) Routes(r *gin.RouterGroup) {
-	tencentcloud_api.Routes(r)
-}
+// Routes mounts the plugin's HTTP routes, of which there are none: hosts
+// call the Go API (tencentcloud.SendSms) in-process, and the phone
+// verification flow that clients reach over HTTP belongs to the smsverify
+// plugin. The type stays registered so plugin:install still resolves the
+// module, and so the migrations compiled in beside it are part of the host
+// binary.
+func (Plugin) Routes(*gin.RouterGroup) {}
 
 // SmsVerifyPlugin is the phone verification module: it issues image captchas
 // and rate-limited login codes over SMS.
@@ -39,7 +40,7 @@ func (SmsVerifyPlugin) MountPath() string { return "/api/v1" }
 
 // Routes mounts the two public endpoints unconditionally: clients call them
 // directly, and they defend themselves with smsverify's rate limits rather
-// than with the local-mode gate the tencentcloud debug routes use.
+// than with an authentication gate. They are the module's only HTTP surface.
 func (SmsVerifyPlugin) Routes(r *gin.RouterGroup) {
 	sms_codes_api.Routes(r)
 	captcha_api.Routes(r)

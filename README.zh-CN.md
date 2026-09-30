@@ -21,14 +21,8 @@ go mod tidy
 go run ./install/ignore/devserver   # 默认监听 127.0.0.1:3000,可用 LISTEN 覆盖
 ```
 
-```bash
-curl -X POST http://127.0.0.1:3000/api/v1/tencentcloud/sms/send/mock \
-  -H 'Content-Type: application/json' \
-  -d '{"phone_numbers":["+8618501234444"],"template_id":"1234567"}'
-```
-
-开发服务器无条件注册全部端点,并用一个内存 SQLite 库支撑,因此手机号验证码
-流程可以端到端跑通:
+开发服务器无条件注册 `smsverify` 的端点,并用一个内存 SQLite 库支撑,因此
+手机号验证码流程可以端到端跑通:
 
 ```bash
 curl -s localhost:3000/api/v1/captcha
@@ -37,8 +31,8 @@ curl -sX POST localhost:3000/api/v1/sms_codes \
 ```
 
 启动时带上 `AIRWAY_ENV=local`,短信走 mock 驱动,验证码会以 `dev_code` 返回
-而不是真的发出去。tencentcloud 的 mock 接口同样无需配置;真实的 `/sms/send`
-在首次调用时读取 `TENCENTCLOUD_*` 环境变量(见「配置」一节)。
+而不是真的发出去。`SMS_DRIVER=tencent` 时驱动在首次调用时读取
+`TENCENTCLOUD_*` 环境变量(见「配置」一节)。
 
 把 `DB_DSN` 指向 PostgreSQL 或 MySQL,开发服务器就改从那个库提供接口,并顺带
 把模块的迁移应用上去 —— 想确认迁移在宿主真正使用的数据库上跑得通,这是最
@@ -62,10 +56,11 @@ import (
 )
 ```
 
-模块里有两个插件,这一次导入会把两个都注册上:`tencentcloud`(调试端点,
-仅本地模式)和 `smsverify`(公开的手机号验证码端点)。`plugin:install` 按模块
-路径解析插件,所以安装名固定是 `tencentcloud`;两个插件共用的表是编译进来的,
-不需要安装(见[安装布局](#安装布局))。
+模块里有两个插件,这一次导入会把两个都注册上:`smsverify` 提供手机号验证码
+端点;`tencentcloud` 不提供任何 HTTP 路由,宿主直接在进程内调用它的 Go API,
+它存在是为了让 `plugin:install` 能解析到本模块,并让它旁边编译进来的表结构
+进入宿主二进制。`plugin:install` 以解析到的插件命名安装,所以安装名固定是
+`tencentcloud`;两个插件共用的表是编译进来的,不需要安装(见[安装布局](#安装布局))。
 
 这次导入同样是宿主拿到插件 Go API 的方式 —— 代码被编译进宿主二进制,调用
 全程在进程内,不经过 HTTP:
@@ -109,108 +104,14 @@ for _, status := range result.SendStatuses {
 缺少变量只会在第一次 API 调用时报告,不会阻止宿主启动,尚未配置插件的
 宿主可以正常启动。
 
-## HTTP 接口(仅本地开发)
-
-`Routes` 只在宿主处于本地模式(`AIRWAY_ENV=local`)时,才把下面两个端点
-挂到 `/api/v1/tencentcloud` 下;生产环境的宿主一个都不提供,改为调用 Go
-API。两个端点都不校验调用方身份:`/sms/send` 谁都能拿来消耗真实短信配额,
-`/sms/send/mock` 更是把验证码直接写在响应体里。
-
-确实需要在本地模式之外提供它们时,自己挂载并套上你的鉴权 —— 绝不要挂在
-公网路由上:
-
-```go
-tencentcloud_api.DebugRoutes(r.Group("/api/v1/tencentcloud", requireInternalAuth))
-```
-
-路由随模式变化,所以 `airway openapi:generate` 只有在 `AIRWAY_ENV=local`
-下运行才会把这些端点写进文档;生成的文档与实际提供的接口始终一致。
-
-### 发送短信
-
-`POST /api/v1/tencentcloud/sms/send`
-
-```bash
-curl -X POST http://127.0.0.1:3000/api/v1/tencentcloud/sms/send \
-  -H 'Content-Type: application/json' \
-  -d '{
-        "phone_numbers": ["+8618501234444"],
-        "template_id": "1234567",
-        "template_param_set": ["654321"]
-      }'
-```
-
-| 字段 | 必填 | 说明 |
-| --- | --- | --- |
-| `phone_numbers` | 是 | E.164 格式号码(`+8618501234444`);裸 11 位国内手机号也可以。单次最多 200 个,须全为境内或全为境外号码 |
-| `template_id` | 是 | 已审核通过的模板 ID |
-| `template_param_set` | 否 | 模板参数,按模板定义的顺序填写 |
-| `sign_name` | 否 | 覆盖本次请求的 `TENCENTCLOUD_SMS_SIGN_NAME` |
-| `session_context` | 否 | 用户上下文,会在状态中原样返回(最长 512 字节) |
-
-响应(`code` 为 0 只表示腾讯云接受了请求;每个号码的发送结果要看对应的
-status):
-
-```json
-{
-  "code": 0,
-  "data": {
-    "request_id": "a0d44e6f-606b-4572-89f3-209ea1a6cf5a",
-    "send_status_set": [
-      {
-        "serial_no": "5000:10933456789012345678901234567",
-        "phone_number": "+8618501234444",
-        "fee": 1,
-        "code": "Ok",
-        "message": "send success"
-      }
-    ]
-  },
-  "message": ""
-}
-```
-
-### Mock 发送(本地调试)
-
-`POST /api/v1/tencentcloud/sms/send/mock`
-
-请求字段、校验规则和响应结构与[发送短信](#发送短信)完全一致 —— 字段和
-类型没有任何增减,客户端在两个接口之间切换不需要改动任何代码。区别仅
-有一点:mock 不触碰腾讯云(不需要密钥和短信配置),生成的验证码就是
-响应里 `request_id` 和每条 status 的 `serial_no` 的值(6 位数字字符串,
-保留前导零)。
-
-> 该接口会把验证码发给任何调用者,所以只在本地模式下注册,切勿挂到
-> 其他任何地方。
-
-```json
-{
-  "code": 0,
-  "data": {
-    "request_id": "654321",
-    "send_status_set": [
-      {
-        "serial_no": "654321",
-        "phone_number": "+8618501234444",
-        "fee": 1,
-        "session_context": "order-42",
-        "code": "Ok",
-        "message": "mock send success"
-      }
-    ]
-  },
-  "message": ""
-}
-```
-
 ## 手机号验证码(`smsverify`)
 
 模块的第二个插件实现了登录/注册页面需要的那一整套:通过短信下发验证码、
 限制同一个手机号和同一个 IP 的请求频率、对过于频繁的 IP 要求图形验证码,
 以及校验验证码。
 
-与 tencentcloud 的调试路由不同,**这两个端点在所有环境下都会挂载** ——
-`AIRWAY_ENV` 不影响它们。它们天生面向客户端直接调用,防护靠下面的限流而不是
+**这两个端点在所有环境下都会挂载** —— `AIRWAY_ENV` 不影响它们,它们也是本
+模块仅有的 HTTP 接口。它们天生面向客户端直接调用,防护靠下面的限流而不是
 鉴权。插件挂在 `/api/v1` 下,占用了这个公共前缀:宿主或其他插件如果也注册
 `/api/v1/sms_codes` 或 `/api/v1/captcha`,启动时会直接冲突。
 
